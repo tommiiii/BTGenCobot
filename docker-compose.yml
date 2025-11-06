@@ -1,0 +1,62 @@
+services:
+  # Main ROS2 workspace - runs natively on host architecture (arm64 on Apple Silicon)
+  btgencobot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: btgencobot_dev
+    hostname: btgencobot
+    network_mode: host
+    ports:
+      - "6080:6080"  # noVNC web interface
+      - "5901:5901"  # VNC server
+    volumes:
+      - ./:/workspace
+    environment:
+      - ROS_DOMAIN_ID=42
+      - DISPLAY=:1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+  # CoppeliaSim simulator - x86 only (CoppeliaSim requirement)
+  coppelia_sim:
+    build:
+      context: .
+      dockerfile: Dockerfile.coppelia
+    platform: linux/amd64
+    container_name: coppelia_sim
+    hostname: coppelia
+    network_mode: host
+    ports:
+      - "6081:6080"  # noVNC web interface
+      - "5902:5901"  # VNC server
+    environment:
+      - ROS_DOMAIN_ID=42
+      - DISPLAY=:1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    stdin_open: true
+    tty: true
+    profiles:
+      - coppelia
+
+  # Gazebo simulator - native architecture (optional alternative to CoppeliaSim)
+  gazebo_sim:
+    build:
+      context: .
+      dockerfile: Dockerfile.gazebo
+    container_name: gazebo_sim
+    hostname: gazebo
+    network_mode: host
+    ports:
+      - "6081:6080"  # noVNC web interface
+      - "5902:5901"  # VNC server
+    environment:
+      - ROS_DOMAIN_ID=42
+      - DISPLAY=:1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    stdin_open: true
+    tty: true
+    profiles:
+      - gazebo

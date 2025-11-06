@@ -1,0 +1,43 @@
+FROM osrf/ros:jazzy-desktop
+SHELL ["/bin/bash", "-c"]
+
+# Install Gazebo Harmonic and VNC
+RUN apt-get update && apt-get install -y \
+    tigervnc-standalone-server \
+    tigervnc-xorg-extension \
+    novnc \
+    websockify \
+    xfce4 \
+    xfce4-terminal \
+    ros-jazzy-ros-gz \
+    && rm -rf /var/lib/apt/lists/*
+
+# Setup VNC
+RUN mkdir -p /root/.vnc && \
+    echo "vncpassword" | vncpasswd -f > /root/.vnc/passwd && \
+    chmod 600 /root/.vnc/passwd && \
+    echo '#!/bin/bash\nstartxfce4 &' > /root/.vnc/xstartup && \
+    chmod +x /root/.vnc/xstartup
+
+# Setup environment
+RUN echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
+
+# Create entrypoint script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+# Start VNC server\n\
+vncserver :1 -geometry 1920x1080 -depth 24 -localhost no &\n\
+sleep 2\n\
+websockify --web=/usr/share/novnc 6080 localhost:5901 &\n\
+\n\
+# Source ROS setup\n\
+source /opt/ros/jazzy/setup.bash\n\
+\n\
+exec "$@"\n\
+' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+WORKDIR /root
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]

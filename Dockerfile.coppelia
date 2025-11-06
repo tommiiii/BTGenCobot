@@ -1,0 +1,64 @@
+FROM osrf/ros:jazzy-desktop
+SHELL ["/bin/bash", "-c"]
+
+# Install VNC and CoppeliaSim dependencies
+RUN apt-get update && apt-get install -y \
+  wget \
+  xz-utils \
+  tigervnc-standalone-server \
+  tigervnc-xorg-extension \
+  novnc \
+  websockify \
+  xfce4 \
+  xfce4-terminal \
+  libgl1-mesa-glx \
+  libglu1-mesa \
+  && rm -rf /var/lib/apt/lists/*
+
+# Download and install CoppeliaSim EDU
+WORKDIR /opt
+RUN wget https://www.coppeliarobotics.com/files/CoppeliaSim_Edu_V4_10_0_rev18_Ubuntu22_04.tar.xz && \
+  tar -xf CoppeliaSim_Edu_V4_6_0_rev18_Ubuntu22_04.tar.xz && \
+  rm CoppeliaSim_Edu_V4_6_0_rev18_Ubuntu22_04.tar.xz && \
+  mv CoppeliaSim_Edu_V4_6_0_rev18_Ubuntu22_04 coppelia_sim
+
+# Install sim_ros2_interface
+WORKDIR /opt/coppelia_sim
+RUN git clone --recursive https://github.com/CoppeliaRobotics/simExtROS2.git && \
+  cd simExtROS2 && \
+  source /opt/ros/jazzy/setup.bash && \
+  colcon build --symlink-install
+
+# Setup VNC
+RUN mkdir -p /root/.vnc && \
+  echo "vncpassword" | vncpasswd -f > /root/.vnc/passwd && \
+  chmod 600 /root/.vnc/passwd && \
+  echo '#!/bin/bash\nstartxfce4 &' > /root/.vnc/xstartup && \
+  chmod +x /root/.vnc/xstartup
+
+# Setup environment
+RUN echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc && \
+  echo "export COPPELIASIM_ROOT_DIR=/opt/coppelia_sim" >> ~/.bashrc && \
+  echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/opt/coppelia_sim" >> ~/.bashrc
+
+# Create entrypoint script
+RUN echo '#!/bin/bash\n\
+  set -e\n\
+  \n\
+  # Start VNC server\n\
+  vncserver :1 -geometry 1920x1080 -depth 24 -localhost no &\n\
+  sleep 2\n\
+  websockify --web=/usr/share/novnc 6080 localhost:5901 &\n\
+  \n\
+  # Source ROS setup\n\
+  source /opt/ros/jazzy/setup.bash\n\
+  export COPPELIASIM_ROOT_DIR=/opt/coppelia_sim\n\
+  export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/coppelia_sim\n\
+  \n\
+  exec "$@"\n\
+  ' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+WORKDIR /opt/coppelia_sim
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]

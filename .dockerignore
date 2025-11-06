@@ -1,0 +1,47 @@
+# Build artifacts
+install/
+build/
+log/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Git (reduces build context by ~10MB+)
+.git/
+.gitignore
+
+# Docker files (not needed in build context)
+Dockerfile*
+docker-compose.yml
+.dockerignore
+
+# Documentation (not needed in container)
+README.md
+ROADMAP.md
+.restructure_summary.md
+*.md
+
+# Large model files (already in container)
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Logs
+logs/
+*.log
+
+# Cache
+.cache/
+
+# Gazebo
+.gazebo/
