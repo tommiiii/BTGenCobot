@@ -10,55 +10,110 @@ RUN apt-get update && apt-get install -y \
   novnc \
   websockify \
   xfce4 \
-  xfce4-terminal \
-  libgl1-mesa-glx \
+  xfce4-goodies \
+  dbus-x11 \
+  libgl1 \
   libglu1-mesa \
   && rm -rf /var/lib/apt/lists/*
 
-# Download and install CoppeliaSim EDU
+# Download and install CoppeliaSim 4.10
 WORKDIR /opt
-RUN wget https://www.coppeliarobotics.com/files/CoppeliaSim_Edu_V4_10_0_rev18_Ubuntu22_04.tar.xz && \
-  tar -xf CoppeliaSim_Edu_V4_6_0_rev18_Ubuntu22_04.tar.xz && \
-  rm CoppeliaSim_Edu_V4_6_0_rev18_Ubuntu22_04.tar.xz && \
-  mv CoppeliaSim_Edu_V4_6_0_rev18_Ubuntu22_04 coppelia_sim
+RUN wget https://www.coppeliarobotics.com/files/V4_10_0_rev0/CoppeliaSim_Edu_V4_10_0_rev0_Ubuntu22_04.tar.xz && \
+  tar -xf CoppeliaSim_Edu_V4_10_0_rev0_Ubuntu22_04.tar.xz && \
+  rm CoppeliaSim_Edu_V4_10_0_rev0_Ubuntu22_04.tar.xz && \
+  mv CoppeliaSim_Edu_V4_10_0_rev0_Ubuntu22_04 coppeliasim
 
-# Install sim_ros2_interface
-WORKDIR /opt/coppelia_sim
-RUN git clone --recursive https://github.com/CoppeliaRobotics/simExtROS2.git && \
-  cd simExtROS2 && \
-  source /opt/ros/jazzy/setup.bash && \
-  colcon build --symlink-install
-
-# Setup VNC
-RUN mkdir -p /root/.vnc && \
-  echo "vncpassword" | vncpasswd -f > /root/.vnc/passwd && \
-  chmod 600 /root/.vnc/passwd && \
-  echo '#!/bin/bash\nstartxfce4 &' > /root/.vnc/xstartup && \
-  chmod +x /root/.vnc/xstartup
+# Set environment variable
+ENV COPPELIASIM_ROOT_DIR=/opt/coppeliasim
 
 # Setup environment
 RUN echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc && \
-  echo "export COPPELIASIM_ROOT_DIR=/opt/coppelia_sim" >> ~/.bashrc && \
-  echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/opt/coppelia_sim" >> ~/.bashrc
+  echo "export COPPELIASIM_ROOT_DIR=/opt/coppeliasim" >> ~/.bashrc && \
+  echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/opt/coppeliasim" >> ~/.bashrc
 
-# Create entrypoint script
-RUN echo '#!/bin/bash\n\
-  set -e\n\
-  \n\
-  # Start VNC server\n\
-  vncserver :1 -geometry 1920x1080 -depth 24 -localhost no &\n\
-  sleep 2\n\
-  websockify --web=/usr/share/novnc 6080 localhost:5901 &\n\
-  \n\
-  # Source ROS setup\n\
-  source /opt/ros/jazzy/setup.bash\n\
-  export COPPELIASIM_ROOT_DIR=/opt/coppelia_sim\n\
-  export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/coppelia_sim\n\
-  \n\
-  exec "$@"\n\
-  ' > /entrypoint.sh && chmod +x /entrypoint.sh
+# Create VNC directory and setup scripts
+RUN mkdir -p /root/.vnc
 
-WORKDIR /opt/coppelia_sim
+# Create basic X resources file
+RUN echo '! Basic X resources' > /root/.Xresources && \
+  echo '! This file can be empty - it prevents xrdb errors' >> /root/.Xresources
 
+# Create VNC startup script
+RUN echo '#!/bin/bash' > /root/.vnc/xstartup && \
+  echo '# Unset SESSION_MANAGER to avoid conflicts' >> /root/.vnc/xstartup && \
+  echo 'unset SESSION_MANAGER' >> /root/.vnc/xstartup && \
+  echo 'unset DBUS_SESSION_BUS_ADDRESS' >> /root/.vnc/xstartup && \
+  echo '' >> /root/.vnc/xstartup && \
+  echo '# Start D-Bus' >> /root/.vnc/xstartup && \
+  echo 'service dbus start' >> /root/.vnc/xstartup && \
+  echo '' >> /root/.vnc/xstartup && \
+  echo '# Set some basic X resources (ignore errors)' >> /root/.vnc/xstartup && \
+  echo 'xrdb $HOME/.Xresources 2>/dev/null || true' >> /root/.vnc/xstartup && \
+  echo '' >> /root/.vnc/xstartup && \
+  echo '# Start XFCE desktop environment' >> /root/.vnc/xstartup && \
+  echo 'exec startxfce4' >> /root/.vnc/xstartup && \
+  chmod +x /root/.vnc/xstartup
+
+# Create VNC password file (password: "vncpassword")
+RUN mkdir -p /root/.config && \
+  echo "vncpassword" | vncpasswd -f > /root/.vnc/passwd && \
+  chmod 600 /root/.vnc/passwd
+
+# Create noVNC startup script
+RUN echo '#!/bin/bash' > /root/start_vnc.sh && \
+  echo '# Kill any existing VNC servers' >> /root/start_vnc.sh && \
+  echo 'vncserver -kill :2 2>/dev/null || true' >> /root/start_vnc.sh && \
+  echo '' >> /root/start_vnc.sh && \
+  echo '# Start VNC server' >> /root/start_vnc.sh && \
+  echo 'vncserver :2 -geometry 1920x1080 -depth 24 -localhost no' >> /root/start_vnc.sh && \
+  echo '' >> /root/start_vnc.sh && \
+  echo '# Wait a moment for VNC to start' >> /root/start_vnc.sh && \
+  echo 'sleep 3' >> /root/start_vnc.sh && \
+  echo '' >> /root/start_vnc.sh && \
+  echo '# Start websockify for VNC access' >> /root/start_vnc.sh && \
+  echo 'echo "Starting VNC web server on port 6081..."' >> /root/start_vnc.sh && \
+  echo 'websockify --web=/usr/share/novnc 6081 localhost:5902 2>/dev/null || \' >> /root/start_vnc.sh && \
+  echo 'websockify 6081 localhost:5902 &' >> /root/start_vnc.sh && \
+  echo '' >> /root/start_vnc.sh && \
+  echo '# Keep the container running' >> /root/start_vnc.sh && \
+  echo 'wait' >> /root/start_vnc.sh && \
+  chmod +x /root/start_vnc.sh
+
+# Set display for VNC
+ENV DISPLAY=:2
+
+# Expose ports
+EXPOSE 6081 5902
+
+# Setup entrypoint with VNC support and OpenGL
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+  echo '# Fix hostname resolution for VNC (needed with host networking)' >> /entrypoint.sh && \
+  echo 'if ! grep -q "$(hostname)" /etc/hosts; then' >> /entrypoint.sh && \
+  echo '  echo "127.0.0.1 $(hostname)" >> /etc/hosts' >> /entrypoint.sh && \
+  echo 'fi' >> /entrypoint.sh && \
+  echo '' >> /entrypoint.sh && \
+  echo 'source /opt/ros/jazzy/setup.bash' >> /entrypoint.sh && \
+  echo 'export COPPELIASIM_ROOT_DIR=/opt/coppeliasim' >> /entrypoint.sh && \
+  echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/coppeliasim' >> /entrypoint.sh && \
+  echo '' >> /entrypoint.sh && \
+  echo '# Start VNC server if not already running' >> /entrypoint.sh && \
+  echo 'if ! pgrep -x "Xvnc" > /dev/null; then' >> /entrypoint.sh && \
+  echo '  /root/start_vnc.sh &' >> /entrypoint.sh && \
+  echo '  sleep 5' >> /entrypoint.sh && \
+  echo 'fi' >> /entrypoint.sh && \
+  echo '' >> /entrypoint.sh && \
+  echo '# Set OpenGL environment variables for better rendering' >> /entrypoint.sh && \
+  echo 'export LIBGL_ALWAYS_SOFTWARE=1' >> /entrypoint.sh && \
+  echo 'export LIBGL_ALWAYS_INDIRECT=1' >> /entrypoint.sh && \
+  echo '' >> /entrypoint.sh && \
+  echo '# Start a shell or execute the provided command' >> /entrypoint.sh && \
+  echo 'if [ "$#" -eq 0 ]; then' >> /entrypoint.sh && \
+  echo '  /bin/bash' >> /entrypoint.sh && \
+  echo 'else' >> /entrypoint.sh && \
+  echo '  exec "$@"' >> /entrypoint.sh && \
+  echo 'fi' >> /entrypoint.sh && \
+  chmod +x /entrypoint.sh
+
+WORKDIR /opt/coppeliasim
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash"]

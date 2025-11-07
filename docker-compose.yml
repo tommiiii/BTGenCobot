@@ -6,7 +6,6 @@ services:
       dockerfile: Dockerfile
     container_name: btgencobot_dev
     hostname: btgencobot
-    network_mode: host
     ports:
       - "6080:6080"  # noVNC web interface
       - "5901:5901"  # VNC server
@@ -28,13 +27,12 @@ services:
     platform: linux/amd64
     container_name: coppelia_sim
     hostname: coppelia
-    network_mode: host
     ports:
-      - "6081:6080"  # noVNC web interface
-      - "5902:5901"  # VNC server
+      - "6081:6081"  # noVNC web interface
+      - "5902:5902"  # VNC server
     environment:
       - ROS_DOMAIN_ID=42
-      - DISPLAY=:1
+      - DISPLAY=:2
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
     stdin_open: true
     tty: true
@@ -48,13 +46,12 @@ services:
       dockerfile: Dockerfile.gazebo
     container_name: gazebo_sim
     hostname: gazebo
-    network_mode: host
     ports:
-      - "6081:6080"  # noVNC web interface
-      - "5902:5901"  # VNC server
+      - "6082:6082"  # noVNC web interface
+      - "5903:5903"  # VNC server
     environment:
       - ROS_DOMAIN_ID=42
-      - DISPLAY=:1
+      - DISPLAY=:3
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
     stdin_open: true
     tty: true

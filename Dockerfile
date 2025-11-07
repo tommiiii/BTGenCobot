@@ -1,8 +1,11 @@
-FROM osrf/ros:jazzy-desktop
+# Use AMD64 platform for better Python wheel availability (pre-built PyTorch CPU, transformers, etc.)
+# Note: Runs via emulation on Apple Silicon, but gives access to full PyPI ecosystem
+FROM --platform=linux/amd64 osrf/ros:jazzy-desktop
 SHELL ["/bin/bash", "-c"]
 
-# Install essential dependencies
-# Use BuildKit cache mount to persist apt cache between builds
+# Install ROS2 navigation stack and dependencies
+# Note: Nav2 is the navigation framework, SLAM Toolbox provides mapping/localization
+# They work together but are separate packages (Nav2 can use pre-made maps OR SLAM)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,target=/var/lib/apt,sharing=locked \
   apt-get update && apt-get install -y \
@@ -13,24 +16,30 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   ros-jazzy-nav2-bt-navigator \
   ros-jazzy-behaviortree-cpp \
   ros-jazzy-slam-toolbox \
-  ros-jazzy-foxglove-bridge \
+  ros-jazzy-foxglove-bridge
+
+# Install VNC packages separately to avoid conflicts
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update && apt-get install -y \
   tigervnc-standalone-server \
   tigervnc-xorg-extension \
   novnc \
   websockify \
   xfce4 \
-  xfce4-terminal
+  xfce4-goodies \
+  dbus-x11
 
-# Install Python ML dependencies (CPU-only PyTorch to avoid CUDA bloat and system package conflicts)
+# Install Python ML dependencies (CPU-only PyTorch to avoid CUDA bloat)
 # Use --ignore-installed to avoid conflicts with system packages
-# Use BuildKit cache mount to persist pip cache between builds (MUCH faster rebuilds)
+# Use BuildKit cache mount to persist pip cache between builds (faster rebuilds)
 RUN --mount=type=cache,target=/root/.cache/pip \
+  echo "Installing PyTorch CPU-only (no CUDA)..." && \
   pip3 install --break-system-packages --ignore-installed typing-extensions \
-  torch --index-url https://download.pytorch.org/whl/cpu && \
-  pip3 install --break-system-packages --ignore-installed typing-extensions \
-  transformers \
-  outlines \
-  accelerate
+    torch --index-url https://download.pytorch.org/whl/cpu && \
+  echo "Installing transformers, outlines, accelerate..." && \
+  pip3 install --break-system-packages \
+    transformers outlines accelerate
 
 # Create workspace
 WORKDIR /workspace
@@ -39,35 +48,103 @@ WORKDIR /workspace
 COPY src/ ./src/
 COPY models/ ./models/
 
-# Setup VNC
-RUN mkdir -p /root/.vnc && \
-  echo "vncpassword" | vncpasswd -f > /root/.vnc/passwd && \
-  chmod 600 /root/.vnc/passwd && \
-  echo '#!/bin/bash\nstartxfce4 &' > /root/.vnc/xstartup && \
+# Create VNC directory and setup scripts
+RUN mkdir -p /root/.vnc
+
+# Create basic X resources file
+RUN echo '! Basic X resources' > /root/.Xresources && \
+  echo '! This file can be empty - it prevents xrdb errors' >> /root/.Xresources
+
+# Create VNC startup script
+RUN echo '#!/bin/bash' > /root/.vnc/xstartup && \
+  echo '# Unset SESSION_MANAGER to avoid conflicts' >> /root/.vnc/xstartup && \
+  echo 'unset SESSION_MANAGER' >> /root/.vnc/xstartup && \
+  echo 'unset DBUS_SESSION_BUS_ADDRESS' >> /root/.vnc/xstartup && \
+  echo '' >> /root/.vnc/xstartup && \
+  echo '# Start D-Bus' >> /root/.vnc/xstartup && \
+  echo 'service dbus start' >> /root/.vnc/xstartup && \
+  echo '' >> /root/.vnc/xstartup && \
+  echo '# Set some basic X resources (ignore errors)' >> /root/.vnc/xstartup && \
+  echo 'xrdb $HOME/.Xresources 2>/dev/null || true' >> /root/.vnc/xstartup && \
+  echo '' >> /root/.vnc/xstartup && \
+  echo '# Start XFCE desktop environment' >> /root/.vnc/xstartup && \
+  echo 'exec startxfce4' >> /root/.vnc/xstartup && \
   chmod +x /root/.vnc/xstartup
 
-# Setup ROS environment
+# Create VNC password file (password: "vncpassword")
+RUN mkdir -p /root/.config && \
+  echo "vncpassword" | vncpasswd -f > /root/.vnc/passwd && \
+  chmod 600 /root/.vnc/passwd
+
+# Create noVNC startup script
+RUN echo '#!/bin/bash' > /root/start_vnc.sh && \
+  echo '# Kill any existing VNC servers' >> /root/start_vnc.sh && \
+  echo 'vncserver -kill :1 2>/dev/null || true' >> /root/start_vnc.sh && \
+  echo '' >> /root/start_vnc.sh && \
+  echo '# Start VNC server' >> /root/start_vnc.sh && \
+  echo 'vncserver :1 -geometry 1920x1080 -depth 24 -localhost no' >> /root/start_vnc.sh && \
+  echo '' >> /root/start_vnc.sh && \
+  echo '# Wait a moment for VNC to start' >> /root/start_vnc.sh && \
+  echo 'sleep 3' >> /root/start_vnc.sh && \
+  echo '' >> /root/start_vnc.sh && \
+  echo '# Start websockify for VNC access' >> /root/start_vnc.sh && \
+  echo 'echo "Starting VNC web server on port 6080..."' >> /root/start_vnc.sh && \
+  echo 'websockify --web=/usr/share/novnc 6080 localhost:5901 2>/dev/null || \' >> /root/start_vnc.sh && \
+  echo 'websockify 6080 localhost:5901 &' >> /root/start_vnc.sh && \
+  echo '' >> /root/start_vnc.sh && \
+  echo '# Keep the container running' >> /root/start_vnc.sh && \
+  echo 'wait' >> /root/start_vnc.sh && \
+  chmod +x /root/start_vnc.sh
+
+# Setup ROS environment and create entrypoint script
 RUN source /opt/ros/jazzy/setup.bash && \
   echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc && \
   echo "[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash" >> ~/.bashrc
 
-# Create entrypoint script
-RUN echo '#!/bin/bash\n\
-  set -e\n\
-  \n\
-  # Start VNC server if DISPLAY is set to :1\n\
-  if [ "$DISPLAY" = ":1" ]; then\n\
-  vncserver :1 -geometry 1920x1080 -depth 24 -localhost no &\n\
-  sleep 2\n\
-  websockify --web=/usr/share/novnc 6080 localhost:5901 &\n\
-  fi\n\
-  \n\
-  # Source ROS setup\n\
-  source /opt/ros/jazzy/setup.bash\n\
-  [ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash\n\
-  \n\
-  exec "$@"\n\
-  ' > /entrypoint.sh && chmod +x /entrypoint.sh
+# Setup entrypoint with VNC support and OpenGL
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+  echo '# Fix hostname resolution for VNC (needed with host networking)' >> /entrypoint.sh && \
+  echo 'if ! grep -q "$(hostname)" /etc/hosts; then' >> /entrypoint.sh && \
+  echo '  echo "" >> /etc/hosts' >> /entrypoint.sh && \
+  echo '  echo "127.0.0.1 $(hostname)" >> /etc/hosts' >> /entrypoint.sh && \
+  echo 'fi' >> /entrypoint.sh && \
+  echo '' >> /entrypoint.sh && \
+  echo 'source /opt/ros/jazzy/setup.bash' >> /entrypoint.sh && \
+  echo '# Backward compatibility: source a root workspace if present' >> /entrypoint.sh && \
+  echo '[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash' >> /entrypoint.sh && \
+  echo '# Source any project workspaces under /workspace/* if present' >> /entrypoint.sh && \
+  echo 'for d in /workspace/*; do' >> /entrypoint.sh && \
+  echo '  if [ -f "$d/install/setup.bash" ]; then' >> /entrypoint.sh && \
+  echo '    source "$d/install/setup.bash"' >> /entrypoint.sh && \
+  echo '  fi' >> /entrypoint.sh && \
+  echo 'done' >> /entrypoint.sh && \
+  echo '' >> /entrypoint.sh && \
+  echo '# Start VNC server if not already running' >> /entrypoint.sh && \
+  echo 'if ! pgrep -x "Xvnc" > /dev/null; then' >> /entrypoint.sh && \
+  echo '  /root/start_vnc.sh &' >> /entrypoint.sh && \
+  echo '  sleep 5' >> /entrypoint.sh && \
+  echo 'fi' >> /entrypoint.sh && \
+  echo '' >> /entrypoint.sh && \
+  echo '# Set OpenGL environment variables for better rendering' >> /entrypoint.sh && \
+  echo 'export LIBGL_ALWAYS_SOFTWARE=1' >> /entrypoint.sh && \
+  echo 'export LIBGL_ALWAYS_INDIRECT=1' >> /entrypoint.sh && \
+  echo 'export QT_QUICK_BACKEND=software' >> /entrypoint.sh && \
+  echo 'export QT_X11_NO_MITSHM=1' >> /entrypoint.sh && \
+  echo 'export GALLIUM_DRIVER=llvmpipe' >> /entrypoint.sh && \
+  echo '' >> /entrypoint.sh && \
+  echo '# Start a shell or execute the provided command' >> /entrypoint.sh && \
+  echo 'if [ "$#" -eq 0 ]; then' >> /entrypoint.sh && \
+  echo '  /bin/bash' >> /entrypoint.sh && \
+  echo 'else' >> /entrypoint.sh && \
+  echo '  exec "$@"' >> /entrypoint.sh && \
+  echo 'fi' >> /entrypoint.sh && \
+  chmod +x /entrypoint.sh
+
+# Set display for VNC
+ENV DISPLAY=:1
+
+# Expose ports
+EXPOSE 6080 5901
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash"]

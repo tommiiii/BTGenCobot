@@ -42,9 +42,10 @@ logs/
 # Gazebo
 .gazebo/
 
-# CoppeliaSim (if used)
-*.ttt
-*.ttm
+# CoppeliaSim build artifacts
+coppelia/sim_ros2_interface/build/
+coppelia/sim_ros2_interface/install/
+coppelia/sim_ros2_interface/log/
 
 # Model outputs
 models/llama_bt_generator/outputs/
