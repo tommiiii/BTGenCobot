@@ -11,6 +11,9 @@ services:
       - "5901:5901"  # VNC server
     volumes:
       - ./:/workspace
+      - ~/.config/nvim:/root/.config/nvim  # Mount nvim config as read-write
+      - nvim-data:/root/.local/share/nvim     # Persist nvim plugins and data
+      - nvim-state:/root/.local/state/nvim    # Persist nvim state
     environment:
       - ROS_DOMAIN_ID=42
       - DISPLAY=:1
@@ -57,3 +60,9 @@ services:
     tty: true
     profiles:
       - gazebo
+
+# Named volumes for nvim data persistence
+volumes:
+  nvim-data:
+  nvim-state:
+

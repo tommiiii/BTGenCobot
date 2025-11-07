@@ -20,6 +20,7 @@ venv/
 .idea/
 *.swp
 *.swo
+.nvim-config/  # Personal neovim config (copied from ~/.config/nvim)
 
 # OS
 .DS_Store

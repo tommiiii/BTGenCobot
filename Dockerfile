@@ -18,7 +18,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   ros-jazzy-slam-toolbox \
   ros-jazzy-foxglove-bridge
 
-# Install VNC packages separately to avoid conflicts
+# Install VNC packages and neovim dependencies
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,target=/var/lib/apt,sharing=locked \
   apt-get update && apt-get install -y \
@@ -28,7 +28,65 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   websockify \
   xfce4 \
   xfce4-goodies \
-  dbus-x11
+  dbus-x11 \
+  software-properties-common \
+  curl \
+  wget \
+  git \
+  unzip \
+  ripgrep \
+  fd-find \
+  build-essential \
+  ninja-build \
+  gettext \
+  cmake \
+  nodejs \
+  npm \
+  sqlite3 \
+  libsqlite3-dev \
+  luarocks \
+  python3-venv \
+  jupyter-core
+
+# Install ImageMagick separately to handle conflicts
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update && \
+  apt-get remove -y graphicsmagick-libmagick-dev-compat 2>/dev/null || true && \
+  apt-get install -y --no-install-recommends \
+  imagemagick \
+  libmagickwand-dev
+
+# Install Python packages for nvim plugins (molten, dap-python, etc.)
+# Use --ignore-installed to avoid conflicts with system packages
+RUN --mount=type=cache,target=/root/.cache/pip \
+  pip3 install --break-system-packages --ignore-installed \
+  pynvim \
+  debugpy \
+  jupyter \
+  jupyter-client \
+  ipykernel \
+  nbformat \
+  pillow \
+  cairosvg \
+  pnglatex \
+  plotly \
+  pyperclip
+
+# Install tree-sitter CLI for neovim treesitter parsers
+RUN npm install -g tree-sitter-cli
+
+# Install latest neovim from source for better plugin compatibility
+RUN cd /tmp && \
+  git clone --depth 1 --branch stable https://github.com/neovim/neovim && \
+  cd neovim && \
+  make CMAKE_BUILD_TYPE=Release && \
+  make install && \
+  cd / && \
+  rm -rf /tmp/neovim
+
+# Install lua packages for image.nvim
+RUN luarocks install magick
 
 # Install Python ML dependencies (CPU-only PyTorch to avoid CUDA bloat)
 # Use --ignore-installed to avoid conflicts with system packages
