@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="mobile_manipulator">
+
+  <!-- Define package path property -->
+  <xacro:property name="mobile_manipulator_path" value="$(find mobile_manipulator)"/>
+
+  <!-- Include TurtleBot4 base -->
+  <xacro:include filename="$(find turtlebot4_description)/urdf/standard/turtlebot4.urdf.xacro"/>
+  
+  <!-- Include local OpenManipulator-X arm (custom version without mimic joints) -->
+  <xacro:include filename="$(find mobile_manipulator)/urdf/openmanipulator_arm.urdf.xacro"/>
+  <xacro:include filename="$(find mobile_manipulator)/urdf/openmanipulator_arm.gazebo.xacro"/>
+  
+  <!-- Instantiate the arm macro -->
+  <xacro:openmanipulator_arm parent="base_link">
+    <origin xyz="0.0 0 0.192" rpy="0 0 0"/>
+  </xacro:openmanipulator_arm>
+  
+  <!-- Instantiate Gazebo properties -->
+  <xacro:openmanipulator_arm_gazebo/>
+  
+  <!-- Include ros2_control -->
+  <xacro:include filename="$(find mobile_manipulator)/urdf/mobile_manipulator.ros2_control.xacro"/>
+
+  <!-- Instantiate ros2_control -->
+  <xacro:mobile_manipulator_ros2_control config_path="${mobile_manipulator_path}/config/arm_controller.yaml"/>
+
+</robot>

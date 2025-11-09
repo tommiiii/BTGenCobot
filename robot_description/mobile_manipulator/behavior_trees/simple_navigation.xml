@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<root BTCPP_format="4">
+  <!-- 
+    Simple Navigation Behavior Tree
+    This BT demonstrates basic navigation using Nav2:
+    - Navigate to a sequence of waypoints
+    - Use recovery behaviors when stuck
+  -->
+  
+  <BehaviorTree ID="SimpleNavigationTask">
+    <Sequence name="NavigateWaypoints">
+      
+      <!-- Navigate to first waypoint -->
+      <ReactiveSequence name="GoToWaypoint1">
+        <Inverter>
+          <GoalReached/>
+        </Inverter>
+        <NavigateToPose goal="2.0;2.0;0.0"/>
+      </ReactiveSequence>
+      
+      <!-- Wait at waypoint -->
+      <Wait wait_duration="2"/>
+      
+      <!-- Navigate to second waypoint -->
+      <ReactiveSequence name="GoToWaypoint2">
+        <Inverter>
+          <GoalReached/>
+        </Inverter>
+        <NavigateToPose goal="2.0;-2.0;1.57"/>
+      </ReactiveSequence>
+      
+      <!-- Wait at waypoint -->
+      <Wait wait_duration="2"/>
+      
+      <!-- Navigate to third waypoint -->
+      <ReactiveSequence name="GoToWaypoint3">
+        <Inverter>
+          <GoalReached/>
+        </Inverter>
+        <NavigateToPose goal="-2.0;-2.0;3.14"/>
+      </ReactiveSequence>
+      
+      <!-- Wait at waypoint -->
+      <Wait wait_duration="2"/>
+      
+      <!-- Return home -->
+      <ReactiveSequence name="ReturnHome">
+        <Inverter>
+          <GoalReached/>
+        </Inverter>
+        <NavigateToPose goal="0.0;0.0;0.0"/>
+      </ReactiveSequence>
+      
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- Navigate to pose with recovery -->
+  <BehaviorTree ID="NavigateToPoseWithRecovery">
+    <RecoveryNode number_of_retries="3" name="NavigateWithRecovery">
+      
+      <!-- Main navigation action -->
+      <PipelineSequence name="NavigationPipeline">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      
+      <!-- Recovery behaviors -->
+      <Sequence name="RecoverySequence">
+        <ClearEntireCostmap name="ClearLocalCostmap" service_name="local_costmap/clear_entirely_local_costmap"/>
+        <ClearEntireCostmap name="ClearGlobalCostmap" service_name="global_costmap/clear_entirely_global_costmap"/>
+        <Spin spin_dist="1.57"/>
+        <Wait wait_duration="2"/>
+      </Sequence>
+      
+    </RecoveryNode>
+  </BehaviorTree>
+
+</root>

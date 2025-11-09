@@ -11,6 +11,13 @@ RUN apt-get update && apt-get install -y \
     xfce4-goodies \
     dbus-x11 \
     ros-jazzy-ros-gz \
+    ros-jazzy-rmw-cyclonedds-cpp \
+    ros-jazzy-joint-trajectory-controller \
+    ros-jazzy-joint-state-broadcaster \
+    ros-jazzy-ros2-control \
+    ros-jazzy-ros2-controllers \
+    ros-jazzy-gz-ros2-control \
+    ros-jazzy-xacro \
     && rm -rf /var/lib/apt/lists/*
 
 # Create VNC directory and setup scripts

@@ -3,7 +3,7 @@
 FROM --platform=linux/amd64 osrf/ros:jazzy-desktop
 SHELL ["/bin/bash", "-c"]
 
-# Install ROS2 navigation stack and dependencies
+# Install all ROS2 dependencies (navigation, simulation, control, etc.)
 # Note: Nav2 is the navigation framework, SLAM Toolbox provides mapping/localization
 # They work together but are separate packages (Nav2 can use pre-made maps OR SLAM)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -16,7 +16,19 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   ros-jazzy-nav2-bt-navigator \
   ros-jazzy-behaviortree-cpp \
   ros-jazzy-slam-toolbox \
-  ros-jazzy-foxglove-bridge
+  ros-jazzy-foxglove-bridge \
+  ros-jazzy-rmw-cyclonedds-cpp \
+  ros-jazzy-joint-trajectory-controller \
+  ros-jazzy-joint-state-broadcaster \
+  ros-jazzy-ros2-control \
+  ros-jazzy-ros2-controllers \
+  ros-jazzy-gz-ros2-control \
+  ros-jazzy-ros-gz \
+  ros-jazzy-xacro \
+  ros-jazzy-turtlebot4-description \
+  ros-jazzy-turtlebot4-msgs \
+  ros-jazzy-irobot-create-description \
+  git
 
 # Install VNC packages and neovim dependencies
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -102,9 +114,18 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Create workspace
 WORKDIR /workspace
 
+# Clone OpenManipulator-X description (not available in Jazzy apt repos)
+RUN mkdir -p /workspace/src && cd /workspace/src && \
+  git clone -b jazzy https://github.com/ROBOTIS-GIT/open_manipulator.git && \
+  git clone -b ros2 https://github.com/ROBOTIS-GIT/open_manipulator_msgs.git && \
+  git clone -b ros2 https://github.com/ROBOTIS-GIT/robotis_manipulator.git
+
+
 # Copy project files
 COPY src/ ./src/
 COPY models/ ./models/
+COPY robot_description/ ./robot_description/
+COPY worlds/ ./worlds/
 
 # Create VNC directory and setup scripts
 RUN mkdir -p /root/.vnc

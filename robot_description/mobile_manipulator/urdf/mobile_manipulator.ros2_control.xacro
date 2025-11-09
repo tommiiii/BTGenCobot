@@ -1,0 +1,114 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="mobile_manipulator_ros2_control" params="config_path">
+    
+    <ros2_control name="arm_controller" type="system">
+      <hardware>
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </hardware>
+
+      <!-- Joint 1 (Base rotation) -->
+      <joint name="joint1">
+        <command_interface name="position">
+          <param name="min">-3.14159265359</param>
+          <param name="max">3.14159265359</param>
+        </command_interface>
+        <command_interface name="velocity">
+          <param name="min">-4.8</param>
+          <param name="max">4.8</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- Joint 2 (Shoulder) -->
+      <joint name="joint2">
+        <command_interface name="position">
+          <param name="min">-1.5707963268</param>
+          <param name="max">1.5707963268</param>
+        </command_interface>
+        <command_interface name="velocity">
+          <param name="min">-4.8</param>
+          <param name="max">4.8</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- Joint 3 (Elbow) -->
+      <joint name="joint3">
+        <command_interface name="position">
+          <param name="min">-1.5707963268</param>
+          <param name="max">1.8707963268</param>
+        </command_interface>
+        <command_interface name="velocity">
+          <param name="min">-4.8</param>
+          <param name="max">4.8</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- Joint 4 (Wrist) -->
+      <joint name="joint4">
+        <command_interface name="position">
+          <param name="min">-1.8707963268</param>
+          <param name="max">1.8707963268</param>
+        </command_interface>
+        <command_interface name="velocity">
+          <param name="min">-4.8</param>
+          <param name="max">4.8</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- Gripper Left Joint -->
+      <joint name="gripper_left_joint">
+        <command_interface name="position">
+          <param name="min">-0.01</param>
+          <param name="max">0.019</param>
+        </command_interface>
+        <command_interface name="velocity">
+          <param name="min">-0.1</param>
+          <param name="max">0.1</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- Gripper Right Joint (controlled independently, no mimic) -->
+      <joint name="gripper_right_joint">
+        <command_interface name="position">
+          <param name="min">-0.019</param>
+          <param name="max">0.01</param>
+        </command_interface>
+        <command_interface name="velocity">
+          <param name="min">-0.1</param>
+          <param name="max">0.1</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+    </ros2_control>
+
+    <!-- Gazebo ros2_control plugin for Gazebo Harmonic (Jazzy) -->
+    <gazebo>
+      <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <robot_param>robot_description</robot_param>
+        <robot_param_node>robot_state_publisher</robot_param_node>
+        <parameters>${config_path}</parameters>
+      </plugin>
+    </gazebo>
+
+  </xacro:macro>
+
+</robot>

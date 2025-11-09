@@ -9,24 +9,27 @@ BTGenCobot converts natural language commands like "Navigate to the kitchen and 
 ## Quick Start
 
 ```bash
-# Build and start the main container (native architecture)
+# Build and start the container
 docker-compose up --build
-
-# Optional: Start with CoppeliaSim (x86 only)
-docker-compose --profile coppelia up --build
-
-# Optional: Start with Gazebo instead
-docker-compose --profile gazebo up --build
 
 # Inside the container, build the workspace
 colcon build --symlink-install
+source install/setup.bash
 
-# Run the system
-ros2 launch bt_bringup robot_bt_bringup.launch.py
+# Launch Gazebo simulation with the mobile manipulator
+ros2 launch mobile_manipulator gazebo.launch.py
+
+# In another terminal (or tmux pane), run Nav2
+ros2 launch bt_bringup nav2_bringup.launch.py
+
+# Run the BT generator node
+ros2 run bt_generator bt_generator_node
 
 # Send commands via ROS2 topic
 ros2 topic pub /user_command std_msgs/String "data: 'Go to the kitchen and say hello'"
 ```
+
+**Access VNC Desktop**: Open http://localhost:6080 in your browser (password: `vncpassword`)
 
 ## Architecture
 
@@ -46,7 +49,7 @@ Nav2 bt_navigator
     ├─ Custom BT plugins
     └─ Standard Nav2 plugins
     ↓
-CoppeliaSim Robot
+Gazebo Simulation (mobile manipulator)
 ```
 
 ## Project Structure
@@ -58,9 +61,6 @@ BTGenCobot/                     # ROS2 Workspace Root
 │   │   ├── bt_generator/       # Python module
 │   │   │   ├── __init__.py
 │   │   │   └── bt_generator_node.py
-│   │   ├── config/             # Generator parameters (future)
-│   │   ├── test/               # Unit tests
-│   │   ├── resource/
 │   │   ├── package.xml
 │   │   ├── setup.py
 │   │   └── setup.cfg
@@ -71,57 +71,44 @@ BTGenCobot/                     # ROS2 Workspace Root
 │   │   ├── CMakeLists.txt
 │   │   └── package.xml
 │   │
-│   ├── bt_description/         # Robot description (URDF, meshes)
-│   │   ├── urdf/               # Robot URDF files
-│   │   ├── meshes/             # 3D models
-│   │   ├── config/             # Robot-specific configs
-│   │   ├── launch/             # Description launchers
-│   │   ├── CMakeLists.txt
-│   │   └── package.xml
-│   │
-│   ├── bt_nav2_plugins/        # Custom BT action plugins
-│   │   ├── include/bt_nav2_plugins/
-│   │   ├── src/                # Plugin implementations (SayText, etc.)
-│   │   ├── plugins/            # Plugin XML descriptors
-│   │   ├── test/               # Plugin tests
-│   │   ├── CMakeLists.txt
-│   │   └── package.xml
-│   │
-│   └── bt_interfaces/          # Custom ROS2 messages/services
-│       ├── msg/                # Custom message definitions
-│       ├── srv/                # Custom service definitions
-│       ├── action/             # Custom action definitions
+│   └── bt_nav2_plugins/        # Custom BT action plugins
+│       ├── include/bt_nav2_plugins/
+│       ├── src/                # Plugin implementations (SayText, etc.)
+│       ├── plugins/            # Plugin XML descriptors
 │       ├── CMakeLists.txt
 │       └── package.xml
 │
-├── models/                     # Non-ROS: LLM model data
-│   └── llama_bt_generator/
-│       ├── models/             # Model weights (*.safetensors)
-│       ├── prompts/            # LLM prompt templates
-│       ├── schemas/            # JSON schemas for structured output
-│       ├── bt_examples/        # Example BT XML files
-│       ├── behavior_constraints/  # Safety constraints
-│       ├── examples/           # Training examples
-│       ├── outputs/            # Generated outputs (gitignored)
+├── robot_description/          # Robot URDF descriptions
+│   └── mobile_manipulator/     # Mobile base + OpenManipulator-X arm
+│       ├── urdf/               # URDF and xacro files
+│       ├── launch/             # Launch files for Gazebo and Nav2
+│       ├── config/             # Nav2 and controller configs
+│       ├── worlds/             # Gazebo world files
+│       ├── behavior_trees/     # Example BT XML files
+│       ├── CMakeLists.txt
+│       ├── package.xml
 │       └── README.md
 │
-├── Dockerfile                  # Main container (ROS2 + LLM)
-├── Dockerfile.coppelia         # CoppeliaSim container (x86 only)
-├── Dockerfile.gazebo           # Gazebo container (alternative)
-├── docker-compose.yml          # Multi-container orchestration
-└── README.md
+├── models/                     # Non-ROS: LLM model data
+│   └── btgenbot2/
+│       ├── models/             # Model weights and config
+│       └── README.md
+│
+├── Dockerfile                  # All-in-one container (ROS2 + Gazebo + Nav2 + LLM)
+├── docker-compose.yml          # Single container setup
+├── README.md
+├── SETUP.md                    # Detailed setup instructions
+└── TESTING_GUIDE.md            # Testing guide for OpenManipulator-X
 ```
 
 ## Components
 
 - **bt_generator**: ROS2 Python node running Llama 3.2-1B with outlines for structured BT XML generation
 - **bt_bringup**: System-level launch files and configurations for Nav2, SLAM, and AMCL
-- **bt_description**: Robot URDF, meshes, and visualization configurations
 - **bt_nav2_plugins**: Custom BehaviorTree.CPP plugins compiled for Nav2
-- **bt_interfaces**: Custom ROS2 message and service definitions
+- **mobile_manipulator**: Custom mobile base with OpenManipulator-X arm (4-DOF + gripper)
 - **Nav2**: Standard ROS2 navigation stack with BT execution
-- **CoppeliaSim**: Robot simulation environment (x86 container)
-- **Gazebo**: Alternative simulation (optional, native architecture)
+- **Gazebo Harmonic**: Robot simulation environment
 
 ## Tech Stack
 
@@ -129,9 +116,8 @@ BTGenCobot/                     # ROS2 Workspace Root
 - **PyTorch** - Llama 3.2-1B inference
 - **outlines** - Structured generation with JSON schema
 - **Nav2** - Navigation stack with BehaviorTree.CPP
-- **CoppeliaSim** - Robot simulator (x86 container)
-- **Gazebo** - Alternative simulator (native architecture)
-- **Docker** - Multi-container deployment with host networking
+- **Gazebo Harmonic** - Robot simulator with ros2_control integration
+- **Docker** - Single container with all dependencies
 
 ## Development Status
 
