@@ -7,13 +7,14 @@ services:
     container_name: btgencobot
     hostname: btgencobot
     ports:
-      - "6080:6080"  # noVNC web interface
-      - "5901:5901"  # VNC server
+      - "6080:6080" # noVNC web interface
+      - "5901:5901" # VNC server
+      - "8765:8765" # Foxglove Bridge
     volumes:
       - ./:/workspace
-      - ~/.config/nvim:/root/.config/nvim  # Mount nvim config as read-write
-      - nvim-data:/root/.local/share/nvim     # Persist nvim plugins and data
-      - nvim-state:/root/.local/state/nvim    # Persist nvim state
+      - ~/.config/nvim:/root/.config/nvim # Mount nvim config as read-write
+      - nvim-data:/root/.local/share/nvim # Persist nvim plugins and data
+      - nvim-state:/root/.local/state/nvim # Persist nvim state
     environment:
       - ROS_DOMAIN_ID=42
       - DISPLAY=:1
@@ -26,4 +27,3 @@ services:
 volumes:
   nvim-data:
   nvim-state:
-

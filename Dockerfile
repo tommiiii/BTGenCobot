@@ -235,7 +235,7 @@ RUN echo '#!/bin/bash' > /entrypoint.sh && \
 ENV DISPLAY=:1
 
 # Expose ports
-EXPOSE 6080 5901
+EXPOSE 6080 5901 8765
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash"]
