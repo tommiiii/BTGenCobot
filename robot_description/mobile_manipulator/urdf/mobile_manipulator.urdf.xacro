@@ -6,19 +6,64 @@
 
   <!-- Include TurtleBot4 base -->
   <xacro:include filename="$(find turtlebot4_description)/urdf/standard/turtlebot4.urdf.xacro"/>
-  
-  <!-- Include local OpenManipulator-X arm (custom version without mimic joints) -->
-  <xacro:include filename="$(find mobile_manipulator)/urdf/openmanipulator_arm.urdf.xacro"/>
-  <xacro:include filename="$(find mobile_manipulator)/urdf/openmanipulator_arm.gazebo.xacro"/>
-  
-  <!-- Instantiate the arm macro -->
-  <xacro:openmanipulator_arm parent="base_link">
-    <origin xyz="0.0 0 0.192" rpy="0 0 0"/>
-  </xacro:openmanipulator_arm>
-  
-  <!-- Instantiate Gazebo properties -->
-  <xacro:openmanipulator_arm_gazebo/>
-  
+
+  <!-- Include official OpenManipulator-X arm -->
+  <xacro:include filename="$(find open_manipulator_description)/urdf/open_manipulator_x/open_manipulator_x_arm.urdf.xacro"/>
+  <xacro:include filename="$(find open_manipulator_description)/gazebo/open_manipulator_x.gazebo.xacro"/>
+
+  <!-- Instantiate the official arm macro -->
+  <xacro:open_manipulator_x prefix=""/>
+
+  <!-- Instantiate Gazebo properties for arm -->
+  <xacro:open_manipulator_x_gazebo prefix=""/>
+
+  <!-- Mount arm to tower_sensor_plate with vertical offset and slight backward position -->
+  <!-- tower_sensor_plate is ~0.283m from base_link, add 0.04m clearance to avoid clipping -->
+  <!-- Position slightly backward (-0.02m X) to improve weight distribution and reduce forward tilt -->
+  <!-- Rotate arm by -90° around Y-axis (pitch) to make it point upward instead of forward -->
+  <xacro:property name="arm_pitch" value="${-pi/2}"/>
+  <joint name="arm_mount_joint" type="fixed">
+    <parent link="tower_sensor_plate"/>
+    <child link="link1"/>
+    <origin xyz="-0.02 0.0 0.04" rpy="0 ${arm_pitch} 0"/>
+  </joint>
+
+  <!-- Counterweight to balance arm weight and prevent forward tilt -->
+  <!-- Positioned at center bottom of sensor tower, directly below the arm -->
+  <link name="counterweight_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.08" length="0.03"/>
+      </geometry>
+      <material name="counterweight_grey">
+        <color rgba="0.2 0.2 0.2 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.08" length="0.03"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.2"/>
+      <inertia ixx="0.003" ixy="0" ixz="0" iyy="0.003" iyz="0" izz="0.005"/>
+    </inertial>
+  </link>
+
+  <joint name="counterweight_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="counterweight_link"/>
+    <origin xyz="0.0 0.0 0.015" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Gazebo material for counterweight -->
+  <gazebo reference="counterweight_link">
+    <material>Gazebo/Black</material>
+  </gazebo>
+
   <!-- Include ros2_control -->
   <xacro:include filename="$(find mobile_manipulator)/urdf/mobile_manipulator.ros2_control.xacro"/>
 

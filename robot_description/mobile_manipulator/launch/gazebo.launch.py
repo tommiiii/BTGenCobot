@@ -46,11 +46,11 @@ def generate_launch_description():
     # Paths
     urdf_file = os.path.join(pkg_mobile_manipulator, 'urdf', 'mobile_manipulator.urdf.xacro')
     controller_config_file = os.path.join(pkg_mobile_manipulator, 'config', 'arm_controller.yaml')
-    world_file = '/workspace/worlds/basic_world.sdf'
 
     # Launch configuration variables
     use_sim_time = LaunchConfiguration('use_sim_time')
     use_rviz = LaunchConfiguration('use_rviz')
+    world_file_arg = LaunchConfiguration('world')
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
 
@@ -65,6 +65,12 @@ def generate_launch_description():
         'use_rviz',
         default_value='false',
         description='Whether to start RViz'
+    )
+
+    declare_world_cmd = DeclareLaunchArgument(
+        'world',
+        default_value='/workspace/worlds/indoor_world.sdf',
+        description='Full path to world file to load (options: indoor_world.sdf, basic_world.sdf, or custom path)'
     )
 
     declare_x_pose_cmd = DeclareLaunchArgument(
@@ -89,7 +95,7 @@ def generate_launch_description():
     env_vars['GZ_SIM_SYSTEM_PLUGIN_PATH'] = '/opt/ros/jazzy/lib'
     
     start_gazebo_cmd = ExecuteProcess(
-        cmd=['gz', 'sim', '-r', world_file],
+        cmd=['gz', 'sim', '-r', world_file_arg],
         output='screen',
         additional_env=env_vars
     )
@@ -134,12 +140,29 @@ def generate_launch_description():
         output='screen'
     )
 
-    # RViz
+    # Bridge for sensor topics
+    bridge_lidar_cmd = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        arguments=[
+            '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/model/mobile_manipulator/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry',
+            '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU'
+        ],
+        output='screen',
+        remappings=[
+            ('/model/mobile_manipulator/odometry', '/odom')
+        ]
+    )
+
+    # RViz with config file
+    rviz_config_file = os.path.join(pkg_mobile_manipulator, 'rviz', 'mobile_manipulator.rviz')
     rviz_cmd = Node(
         condition=IfCondition(use_rviz),
         package='rviz2',
         executable='rviz2',
         name='rviz2',
+        arguments=['-d', rviz_config_file],
         parameters=[{'use_sim_time': use_sim_time}],
         output='screen'
     )
@@ -190,6 +213,7 @@ def generate_launch_description():
     # Declare the launch options
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_use_rviz_cmd)
+    ld.add_action(declare_world_cmd)
     ld.add_action(declare_x_pose_cmd)
     ld.add_action(declare_y_pose_cmd)
 
@@ -197,6 +221,7 @@ def generate_launch_description():
     ld.add_action(start_gazebo_cmd)
     ld.add_action(robot_state_publisher_cmd)
     ld.add_action(bridge_clock_cmd)
+    ld.add_action(bridge_lidar_cmd)
     ld.add_action(spawn_robot_cmd)
     ld.add_action(rviz_cmd)
     ld.add_action(spawn_joint_state_broadcaster_cmd)

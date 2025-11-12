@@ -24,10 +24,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   ros-jazzy-ros2-controllers \
   ros-jazzy-gz-ros2-control \
   ros-jazzy-ros-gz \
+  ros-jazzy-ros-gz-bridge \
+  ros-jazzy-ros-gz-sim \
   ros-jazzy-xacro \
+  ros-jazzy-tf2-ros \
+  ros-jazzy-tf2-tools \
   ros-jazzy-turtlebot4-description \
   ros-jazzy-turtlebot4-msgs \
+  ros-jazzy-turtlebot4-simulator \
   ros-jazzy-irobot-create-description \
+  ros-jazzy-irobot-create-nodes \
+  ros-jazzy-teleop-twist-keyboard \
   git
 
 # Install VNC packages and neovim dependencies

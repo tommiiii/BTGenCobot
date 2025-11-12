@@ -40,7 +40,7 @@ gripper_controller:
   ros__parameters:
     joints:
       - gripper_left_joint
-      - gripper_right_joint
+      # gripper_right_joint is a mimic joint - follows gripper_left_joint automatically
 
     command_interfaces:
       - position
