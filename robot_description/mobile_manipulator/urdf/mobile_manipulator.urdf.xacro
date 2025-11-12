@@ -18,14 +18,14 @@
   <xacro:open_manipulator_x_gazebo prefix=""/>
 
   <!-- Mount arm to tower_sensor_plate with vertical offset and slight backward position -->
-  <!-- tower_sensor_plate is ~0.283m from base_link, add 0.04m clearance to avoid clipping -->
+  <!-- tower_sensor_plate is ~0.283m from base_link, add 0.02m clearance -->
   <!-- Position slightly backward (-0.02m X) to improve weight distribution and reduce forward tilt -->
   <!-- Rotate arm by -90° around Y-axis (pitch) to make it point upward instead of forward -->
   <xacro:property name="arm_pitch" value="${-pi/2}"/>
   <joint name="arm_mount_joint" type="fixed">
     <parent link="tower_sensor_plate"/>
     <child link="link1"/>
-    <origin xyz="-0.02 0.0 0.04" rpy="0 ${arm_pitch} 0"/>
+    <origin xyz="-0.02 0.0 0.02" rpy="0 ${arm_pitch} 0"/>
   </joint>
 
   <!-- Counterweight to balance arm weight and prevent forward tilt -->

@@ -13,7 +13,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   python3-colcon-common-extensions \
   ros-jazzy-navigation2 \
   ros-jazzy-nav2-bringup \
+  ros-jazzy-nav2-map-server \
   ros-jazzy-nav2-bt-navigator \
+  ros-jazzy-nav2-route \
   ros-jazzy-behaviortree-cpp \
   ros-jazzy-slam-toolbox \
   ros-jazzy-foxglove-bridge \
@@ -34,6 +36,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   ros-jazzy-turtlebot4-simulator \
   ros-jazzy-irobot-create-description \
   ros-jazzy-irobot-create-nodes \
+  ros-jazzy-irobot-create-gz-plugins \
+  ros-jazzy-irobot-create-gz-sim \
+  ros-jazzy-irobot-create-gz-bringup \
   ros-jazzy-teleop-twist-keyboard \
   git
 
@@ -113,10 +118,10 @@ RUN luarocks install magick
 RUN --mount=type=cache,target=/root/.cache/pip \
   echo "Installing PyTorch CPU-only (no CUDA)..." && \
   pip3 install --break-system-packages --ignore-installed typing-extensions \
-    torch --index-url https://download.pytorch.org/whl/cpu && \
+  torch --index-url https://download.pytorch.org/whl/cpu && \
   echo "Installing transformers, outlines, accelerate..." && \
   pip3 install --break-system-packages \
-    transformers outlines accelerate
+  transformers outlines accelerate
 
 # Create workspace
 WORKDIR /workspace
