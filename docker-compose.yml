@@ -1,19 +1,32 @@
 services:
-  # Main ROS2 workspace - runs natively on host architecture (arm64 on Apple Silicon)
+  # All-in-one ROS2 workspace with Gazebo, Nav2, and ML dependencies
   btgencobot:
+    platform: linux/arm64
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: btgencobot_dev
+      platforms:
+        - linux/arm64
+    container_name: btgencobot
     hostname: btgencobot
     ports:
-      - "6080:6080"  # noVNC web interface
-      - "5901:5901"  # VNC server
+      - "6080:6080" # noVNC web interface
+      - "5901:5901" # VNC server
+      - "8765:8765" # Foxglove Bridge
     volumes:
-      - ./:/workspace
-      - ~/.config/nvim:/root/.config/nvim  # Mount nvim config as read-write
-      - nvim-data:/root/.local/share/nvim     # Persist nvim plugins and data
-      - nvim-state:/root/.local/state/nvim    # Persist nvim state
+      # Mount only necessary directories instead of entire project
+      - ./src:/workspace/src:cached
+      - ./robot_description:/workspace/robot_description:cached
+      - ./worlds:/workspace/worlds:cached
+      - ./models:/workspace/models:cached  # Mount models as volume instead of copying
+      # ROS2 build artifacts (use delegated for better performance)
+      - ./install:/workspace/install:delegated
+      - ./build:/workspace/build:delegated
+      - ./log:/workspace/log:delegated
+      # Neovim config and data
+      - ~/.config/nvim:/root/.config/nvim:ro  # Read-only to prevent accidental changes
+      - nvim-data:/root/.local/share/nvim
+      - nvim-state:/root/.local/state/nvim
     environment:
       - ROS_DOMAIN_ID=42
       - DISPLAY=:1
@@ -22,47 +35,7 @@ services:
     tty: true
     command: /bin/bash
 
-  # CoppeliaSim simulator - x86 only (CoppeliaSim requirement)
-  coppelia_sim:
-    build:
-      context: .
-      dockerfile: Dockerfile.coppelia
-    platform: linux/amd64
-    container_name: coppelia_sim
-    hostname: coppelia
-    ports:
-      - "6081:6081"  # noVNC web interface
-      - "5902:5902"  # VNC server
-    environment:
-      - ROS_DOMAIN_ID=42
-      - DISPLAY=:2
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-    stdin_open: true
-    tty: true
-    profiles:
-      - coppelia
-
-  # Gazebo simulator - native architecture (optional alternative to CoppeliaSim)
-  gazebo_sim:
-    build:
-      context: .
-      dockerfile: Dockerfile.gazebo
-    container_name: gazebo_sim
-    hostname: gazebo
-    ports:
-      - "6082:6082"  # noVNC web interface
-      - "5903:5903"  # VNC server
-    environment:
-      - ROS_DOMAIN_ID=42
-      - DISPLAY=:3
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-    stdin_open: true
-    tty: true
-    profiles:
-      - gazebo
-
 # Named volumes for nvim data persistence
 volumes:
   nvim-data:
   nvim-state:
-

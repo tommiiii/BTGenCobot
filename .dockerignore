@@ -30,7 +30,9 @@ ROADMAP.md
 .restructure_summary.md
 *.md
 
-# Large model files (already in container)
+# Large model files (mount as volume instead)
+models/
+worlds/models/
 *.safetensors
 *.bin
 *.pt

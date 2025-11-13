@@ -51,3 +51,11 @@ coppelia/sim_ros2_interface/log/
 # Model outputs
 models/llama_bt_generator/outputs/
 models/llama_bt_generator/checkpoints/
+
+# External ROS2 packages (cloned at build time)
+src/open_manipulator/
+src/open_manipulator_msgs/
+src/robotis_manipulator/
+
+# External Gazebo worlds (cloned separately)
+worlds/
