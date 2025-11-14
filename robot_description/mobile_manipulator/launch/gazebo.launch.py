@@ -103,7 +103,7 @@ def generate_launch_description():
     env_vars['GALLIUM_DRIVER'] = 'llvmpipe'
     
     start_gazebo_cmd = ExecuteProcess(
-        cmd=['gz', 'sim', '-r', '-v', '4', world_file_arg],
+        cmd=['gz', 'sim', '-r', '-s', '-v', '4', world_file_arg],
         output='screen',
         additional_env=env_vars
     )
