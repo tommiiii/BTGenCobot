@@ -31,10 +31,14 @@
   <!-- Gazebo plugins for TurtleBot3 sensors and mobility (Gazebo Harmonic / gz-sim) -->
   
   <!-- LIDAR sensor plugin using GPU LIDAR (Gazebo Harmonic compatible) -->
+  <!-- Since base_scan gets lumped into base_footprint despite preserveFixedJoint,
+       attach sensor to base_scan but add pose offset to compensate for lumping.
+       When lumped, sensor will be at correct physical position relative to base_footprint,
+       and gz_frame_id ensures TF lookups work correctly. -->
   <gazebo reference="base_scan">
     <sensor name="lidar" type="gpu_lidar">
       <topic>scan</topic>
-      <update_rate>5</update_rate>
+      <update_rate>10</update_rate>
       <gz_frame_id>base_scan</gz_frame_id>
       <lidar>
         <scan>
@@ -59,6 +63,11 @@
       <always_on>1</always_on>
       <visualize>true</visualize>
     </sensor>
+  </gazebo>
+
+  <!-- Try to preserve base_scan joint (may not work in Gazebo Harmonic) -->
+  <gazebo reference="scan_joint">
+    <preserveFixedJoint>true</preserveFixedJoint>
   </gazebo>
 
   <!-- IMU sensor plugin (Gazebo Harmonic compatible) -->
@@ -135,6 +144,7 @@
       <tf_topic>/model/mobile_manipulator/tf</tf_topic>
       <frame_id>odom</frame_id>
       <child_frame_id>base_footprint</child_frame_id>
+      <publish_odom_tf>true</publish_odom_tf>
     </plugin>
   </gazebo>
 

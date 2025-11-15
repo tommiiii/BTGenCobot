@@ -192,7 +192,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{'use_sim_time': use_sim_time}],
         remappings=[
-            ('/model/mobile_manipulator/tf', 'tf')
+            ('/model/mobile_manipulator/tf', '/tf')
         ]
     )
 

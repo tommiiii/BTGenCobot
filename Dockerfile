@@ -1,4 +1,4 @@
-# Native ARM64 build for Apple Silicon
+# x86_64/AMD64 build
 # osrf/ros:jazzy-desktop only has amd64 images, so we use ros:jazzy and install desktop manually
 FROM ros:jazzy
 SHELL ["/bin/bash", "-c"]
@@ -78,14 +78,14 @@ RUN pip3 install --break-system-packages --ignore-installed \
   pyperclip && \
   npm install -g tree-sitter-cli
 
-# Install latest neovim from prebuilt ARM64 release (much faster than building from source)
+# Install latest neovim from prebuilt x86_64 release (much faster than building from source)
 RUN cd /tmp && \
-  wget -q https://github.com/neovim/neovim/releases/download/v0.11.5/nvim-linux-arm64.tar.gz && \
-  tar xzf nvim-linux-arm64.tar.gz && \
-  cp -r nvim-linux-arm64/bin/* /usr/local/bin/ && \
-  cp -r nvim-linux-arm64/lib/* /usr/local/lib/ && \
-  cp -r nvim-linux-arm64/share/* /usr/local/share/ && \
-  rm -rf /tmp/nvim-linux-arm64*
+  wget -q https://github.com/neovim/neovim/releases/download/v0.11.5/nvim-linux-x86_64.tar.gz && \
+  tar xzf nvim-linux-x86_64.tar.gz && \
+  cp -r nvim-linux-x86_64/bin/* /usr/local/bin/ && \
+  cp -r nvim-linux-x86_64/lib/* /usr/local/lib/ && \
+  cp -r nvim-linux-x86_64/share/* /usr/local/share/ && \
+  rm -rf /tmp/nvim-linux*
 
 # Install Python ML dependencies (CPU-only PyTorch to avoid CUDA bloat)
 # Use --ignore-installed to avoid conflicts with system packages
@@ -95,6 +95,14 @@ RUN echo "Installing PyTorch CPU-only (no CUDA)..." && \
   echo "Installing transformers, outlines, accelerate..." && \
   pip3 install --break-system-packages \
   transformers outlines accelerate
+
+# Install Groot2 for behavior tree visualization
+RUN cd /tmp && \
+  wget -q https://s3.us-west-1.amazonaws.com/download.behaviortree.dev/groot2_linux_installer/Groot2-v1.6.1-linux-installer.run && \
+  chmod +x Groot2-v1.6.1-linux-installer.run && \
+  ./Groot2-v1.6.1-linux-installer.run --accept-licenses --default-answer --confirm-command install && \
+  rm -f Groot2-v1.6.1-linux-installer.run && \
+  ln -s /root/Groot2/bin/groot2 /usr/local/bin/groot2
 
 # Create workspace
 WORKDIR /workspace
@@ -155,7 +163,7 @@ RUN cd /opt/ros/jazzy/opt/gz_sim_vendor/lib/ && \
   done && \
   source /opt/ros/jazzy/setup.bash && \
   echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc && \
-  echo 'export CMAKE_PREFIX_PATH="/usr/lib/aarch64-linux-gnu/console_bridge:/usr/lib/aarch64-linux-gnu/cmake:/opt/ros/jazzy/lib/aarch64-linux-gnu/cmake:$CMAKE_PREFIX_PATH"' >> ~/.bashrc && \
+  echo 'export CMAKE_PREFIX_PATH="/usr/lib/x86_64-linux-gnu/console_bridge:/usr/lib/x86_64-linux-gnu/cmake:/opt/ros/jazzy/lib/x86_64-linux-gnu/cmake:$CMAKE_PREFIX_PATH"' >> ~/.bashrc && \
   echo 'export PYTHONPATH="/opt/ros/jazzy/lib/python3.12/site-packages:/opt/ros/jazzy/local/lib/python3.12/dist-packages:$PYTHONPATH"' >> ~/.bashrc && \
   echo "[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash" >> ~/.bashrc
 
@@ -170,7 +178,7 @@ fi\n\
 source /opt/ros/jazzy/setup.bash\n\
 \n\
 # Add system cmake paths for vendor packages (console_bridge, fmt, etc.)\n\
-export CMAKE_PREFIX_PATH="/usr/lib/aarch64-linux-gnu/console_bridge:/usr/lib/aarch64-linux-gnu/cmake:/opt/ros/jazzy/lib/aarch64-linux-gnu/cmake:$CMAKE_PREFIX_PATH"\n\
+export CMAKE_PREFIX_PATH="/usr/lib/x86_64-linux-gnu/console_bridge:/usr/lib/x86_64-linux-gnu/cmake:/opt/ros/jazzy/lib/x86_64-linux-gnu/cmake:$CMAKE_PREFIX_PATH"\n\
 \n\
 # Add ROS Python packages to PYTHONPATH\n\
 export PYTHONPATH="/opt/ros/jazzy/lib/python3.12/site-packages:/opt/ros/jazzy/local/lib/python3.12/dist-packages:$PYTHONPATH"\n\

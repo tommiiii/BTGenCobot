@@ -1,12 +1,12 @@
 services:
   # All-in-one ROS2 workspace with Gazebo, Nav2, and ML dependencies
   btgencobot:
-    platform: linux/arm64
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
       platforms:
-        - linux/arm64
+        - linux/amd64
     container_name: btgencobot
     hostname: btgencobot
     ports:
