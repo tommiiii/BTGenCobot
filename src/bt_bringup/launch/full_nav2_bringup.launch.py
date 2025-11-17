@@ -6,11 +6,12 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
     # Get package directories
-    pkg_mobile_manipulator = get_package_share_directory('mobile_manipulator')
+    pkg_tb3_manipulation = get_package_share_directory('turtlebot3_manipulation_description')
     pkg_bt_bringup = get_package_share_directory('bt_bringup')
 
     # Launch configuration variables
@@ -40,7 +41,7 @@ def generate_launch_description():
     # Launch Gazebo with robot (use_rviz=true to start RViz)
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(pkg_mobile_manipulator, 'launch', 'gazebo.launch.py')
+            os.path.join(pkg_tb3_manipulation, 'launch', 'gazebo.launch.py')
         ),
         launch_arguments={
             'use_sim_time': use_sim_time,
@@ -69,6 +70,39 @@ def generate_launch_description():
         }.items()
     )
 
+    # Launch BT XML Publisher (publishes current BT XML for Foxglove/Groot2 visualization)
+    bt_xml_publisher = Node(
+        package='bt_generator',
+        executable='bt_generator_node',
+        name='bt_xml_publisher',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'bt_xml_file': '/opt/ros/jazzy/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml'
+        }],
+        output='screen'
+    )
+
+    # Launch Foxglove Bridge with client publish capability
+    foxglove_bridge = Node(
+        package='foxglove_bridge',
+        executable='foxglove_bridge',
+        name='foxglove_bridge',
+        parameters=[{
+            'port': 8765,
+            'address': '0.0.0.0',
+            'tls': False,
+            'certfile': '',
+            'keyfile': '',
+            'topic_whitelist': ['.*'],
+            'service_whitelist': ['.*'],
+            'param_whitelist': ['.*'],
+            'client_topic_whitelist': ['.*'],  # Enable client publishing on all topics
+            'use_sim_time': use_sim_time,
+            'capabilities': ['clientPublish', 'services', 'parameters', 'connectionGraph'],
+        }],
+        output='screen'
+    )
+
     # Create launch description
     ld = LaunchDescription()
 
@@ -81,5 +115,11 @@ def generate_launch_description():
     ld.add_action(gazebo_launch)
     ld.add_action(slam_launch)
     ld.add_action(nav2_launch)
+    
+    # Add BT XML Publisher
+    ld.add_action(bt_xml_publisher)
+    
+    # Add Foxglove Bridge
+    ld.add_action(foxglove_bridge)
 
     return ld

@@ -19,8 +19,10 @@ RUN apt-get update && apt-get install -y \
   ros-jazzy-rmw-cyclonedds-cpp \
   ros-jazzy-joint-trajectory-controller \
   ros-jazzy-joint-state-broadcaster \
+  ros-jazzy-imu-sensor-broadcaster \
   ros-jazzy-ros2-control \
   ros-jazzy-ros2-controllers \
+  ros-jazzy-position-controllers \
   ros-jazzy-gz-ros2-control \
   ros-jazzy-ros-gz \
   ros-jazzy-ros-gz-bridge \

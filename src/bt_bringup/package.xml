@@ -13,8 +13,8 @@
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>nav2_amcl</exec_depend>
   <exec_depend>bt_generator</exec_depend>
-  <exec_depend>bt_description</exec_depend>
   <exec_depend>bt_nav2_plugins</exec_depend>
+  <exec_depend>turtlebot3_manipulation_description</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
