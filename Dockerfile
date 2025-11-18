@@ -66,7 +66,9 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python packages for nvim plugins (molten, dap-python, etc.) and tree-sitter CLI
 # Use --ignore-installed to avoid conflicts with system packages
+# Upgrade pbr to 7.0+ to fix pkg_resources deprecation warnings (critical for Setuptools 81)
 RUN pip3 install --break-system-packages --ignore-installed \
+  'pbr>=7.0.0' \
   pynvim \
   debugpy \
   jupyter \
@@ -88,15 +90,6 @@ RUN cd /tmp && \
   cp -r nvim-linux-x86_64/lib/* /usr/local/lib/ && \
   cp -r nvim-linux-x86_64/share/* /usr/local/share/ && \
   rm -rf /tmp/nvim-linux*
-
-# Install Python ML dependencies (CPU-only PyTorch to avoid CUDA bloat)
-# Use --ignore-installed to avoid conflicts with system packages
-RUN echo "Installing PyTorch CPU-only (no CUDA)..." && \
-  pip3 install --break-system-packages --ignore-installed typing-extensions \
-  torch --index-url https://download.pytorch.org/whl/cpu && \
-  echo "Installing transformers, outlines, accelerate..." && \
-  pip3 install --break-system-packages \
-  transformers outlines accelerate
 
 # Install Groot2 for behavior tree visualization
 RUN cd /tmp && \
@@ -219,7 +212,7 @@ fi\n' > /entrypoint.sh && \
 ENV DISPLAY=:1
 
 # Expose ports
-EXPOSE 6080 5901 8765
+EXPOSE 6080 5901 8765 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash"]
