@@ -1,0 +1,39 @@
+// BehaviorTree XML Grammar
+// Based on W3C XML 1.0 specification, adapted for Lark EBNF syntax
+
+start: xml_decl root
+
+xml_decl: "<?xml" WS "version" WS? "=" WS? version_val "?>"
+version_val: "\"1.0\""
+
+root: "<root" " " "BTCPP_format=\"4\"" " " main_tree_attr ((" " | "\t") attribute)* " "? ">" WS? behavior_tree WS? "</root>"
+main_tree_attr: "main_tree_to_execute=\"" att_value_content "\""
+
+behavior_tree: "<BehaviorTree" ((" " | "\t") attribute)* " "? ">" WS? content WS? "</BehaviorTree>"
+
+content: element (WS? element)*
+
+element: sequence | fallback | parallel | compute_path | follow_path | spin | backup | wait | detect_obj | pick_obj | place_obj
+
+// Control flow nodes
+sequence: "<Sequence" ((" " | "\t") attribute)* " "? ">" WS? content WS? "</Sequence>" | "<Sequence" ((" " | "\t") attribute)* " "? "/>"
+fallback: "<Fallback" ((" " | "\t") attribute)* " "? ">" WS? content WS? "</Fallback>" | "<Fallback" ((" " | "\t") attribute)* " "? "/>"
+parallel: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? content WS? "</Parallel>" | "<Parallel" ((" " | "\t") attribute)* " "? "/>"
+
+// Action nodes
+compute_path: "<ComputePathToPose" ((" " | "\t") attribute)* " "? "/>"
+follow_path: "<FollowPath" ((" " | "\t") attribute)* " "? "/>"
+spin: "<Spin" ((" " | "\t") attribute)* " "? "/>"
+backup: "<BackUp" ((" " | "\t") attribute)* " "? "/>"
+wait: "<Wait" ((" " | "\t") attribute)* " "? "/>"
+detect_obj: "<DetectObject" ((" " | "\t") attribute)* " "? "/>"
+pick_obj: "<PickObject" ((" " | "\t") attribute)* " "? "/>"
+place_obj: "<PlaceObject" ((" " | "\t") attribute)* " "? "/>"
+
+attribute: attr_name " "? "=" " "? "\"" att_value_content "\""
+
+att_value_content: /[^<&"]*/
+
+attr_name: /[A-Za-z_][A-Za-z0-9_.-]*/
+
+WS: /[ \t\n\r]+/

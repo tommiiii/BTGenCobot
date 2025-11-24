@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
   ros-jazzy-behaviortree-cpp \
   ros-jazzy-slam-toolbox \
   ros-jazzy-foxglove-bridge \
-  ros-jazzy-rmw-cyclonedds-cpp \
+  ros-jazzy-rmw-fastrtps-cpp \
   ros-jazzy-joint-trajectory-controller \
   ros-jazzy-joint-state-broadcaster \
   ros-jazzy-imu-sensor-broadcaster \
@@ -81,6 +81,28 @@ RUN pip3 install --break-system-packages --ignore-installed \
   plotly \
   pyperclip && \
   npm install -g tree-sitter-cli
+
+# Install Grounding DINO dependencies for object detection
+# PyTorch with CUDA support
+# Note: Using numpy<2.0 for compatibility with ROS2 cv_bridge
+RUN pip3 install --break-system-packages --ignore-installed \
+  'numpy<2.0' \
+  torch \
+  torchvision \
+  opencv-python>=4.8.0 \
+  supervision>=0.16.0
+
+# Install Grounding DINO from GitHub (includes model configs)
+# Clone to /opt for system-wide access
+RUN cd /opt && \
+  git clone https://github.com/IDEA-Research/GroundingDINO.git && \
+  cd GroundingDINO && \
+  pip3 install --break-system-packages . && \
+  # Create symlink so configs are accessible
+  ln -sf /opt/GroundingDINO/groundingdino /usr/local/lib/python3.12/dist-packages/groundingdino 2>/dev/null || true
+
+# Note: Model weights are mounted from host at /workspace/models/grounding_dino/
+# No need to create directory here - it's handled by docker-compose volume mount
 
 # Install latest neovim from prebuilt x86_64 release (much faster than building from source)
 RUN cd /tmp && \

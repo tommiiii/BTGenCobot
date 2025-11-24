@@ -140,8 +140,8 @@
       <max_angular_velocity>1.82</max_angular_velocity>
       <min_angular_velocity>-1.82</min_angular_velocity>
       <topic>cmd_vel</topic>
-      <odom_topic>/model/mobile_manipulator/odometry</odom_topic>
-      <tf_topic>/model/mobile_manipulator/tf</tf_topic>
+      <odom_topic>/model/turtlebot3_manipulation/odometry</odom_topic>
+      <tf_topic>/model/turtlebot3_manipulation/tf</tf_topic>
       <frame_id>odom</frame_id>
       <child_frame_id>base_footprint</child_frame_id>
       <publish_odom_tf>true</publish_odom_tf>

@@ -60,3 +60,4 @@ src/robotis_manipulator/
 
 # External Gazebo worlds (cloned separately)
 worlds/
+models

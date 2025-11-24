@@ -7,6 +7,9 @@ bt_navigator:
     bt_loop_duration: 10
     default_server_timeout: 20
     always_reload_bt_xml: True
+    # Load custom BT plugins
+    plugin_lib_names:
+      - bt_nav2_plugins
     navigators: ['navigate_to_pose', 'navigate_through_poses']
     navigate_to_pose:
       plugin: "nav2_bt_navigator::NavigateToPoseNavigator"

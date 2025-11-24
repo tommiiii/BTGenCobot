@@ -1,0 +1,7 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="DetectOnlyTest">
+    <Sequence>
+      <DetectObject object_description="red cup" target_pose="{detected_pose}"/>
+    </Sequence>
+  </BehaviorTree>
+</root>
