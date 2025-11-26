@@ -123,8 +123,8 @@ def generate_launch_description():
 
     # Launch BT XML Publisher (publishes current BT XML for Foxglove/Groot2 visualization)
     bt_xml_publisher = Node(
-        package='bt_generator',
-        executable='bt_generator_node',
+        package='bt_xml_publisher',
+        executable='bt_xml_publisher_node',
         name='bt_xml_publisher',
         parameters=[{
             'use_sim_time': use_sim_time,

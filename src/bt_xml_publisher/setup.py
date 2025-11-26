@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 import os
 from glob import glob
 
-package_name = 'bt_generator'
+package_name = 'bt_xml_publisher'
 
 setup(
     name=package_name,
@@ -18,12 +18,11 @@ setup(
     zip_safe=True,
     maintainer='Your Name',
     maintainer_email='your.email@example.com',
-    description='ROS2 node for LLM-based behavior tree generation using Llama 3.2-1B',
+    description='ROS2 node for publishing BehaviorTree XML for visualization in Groot2/Foxglove',
     license='MIT',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'bt_generator_node = bt_generator.bt_generator_node:main',
+            'bt_xml_publisher_node = bt_xml_publisher.bt_xml_publisher_node:main',
         ],
     },
 )

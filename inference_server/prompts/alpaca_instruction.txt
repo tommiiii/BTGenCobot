@@ -7,6 +7,7 @@ You are a helpful assistant that can assist with creating behavior trees. Your t
 Output Requirements:
 - Output only the XML representation of the behavior tree. Do not include explanations, comments, or any additional text.
 - Ensure all actions and parameters strictly match the provided list.
-- If possible limit the use of SubTrees.
+- Use blackboard variables for dynamic values: {goal}, {path}, {target_pose}
+- Spin distances must be in radians (90°=1.57, 180°=3.14)
 
 Please generate the behavior tree based on the summary and action list provided.

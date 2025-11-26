@@ -120,7 +120,7 @@ BT::NodeStatus DetectObject::onRunning()
     RCLCPP_INFO(node_->get_logger(), "Sending detection request to service...");
 
     // Send async request
-    future_result_ = detect_client_->async_send_request(request);
+    future_result_ = detect_client_->async_send_request(request).future.share();
     service_call_sent_ = true;
 
     return BT::NodeStatus::RUNNING;
@@ -191,7 +191,7 @@ BT::NodeStatus DetectObject::onRunning()
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "✓ Detected '%s' at (%.2f, %.2f, %.2f) in %s frame with %.2f confidence",
+    "Detected '%s' at (%.2f, %.2f, %.2f) in %s frame with %.2f confidence",
     response->phrase.c_str(),
     target_pose.pose.position.x,
     target_pose.pose.position.y,

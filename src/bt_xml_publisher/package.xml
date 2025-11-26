@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>bt_generator</name>
+  <name>bt_xml_publisher</name>
   <version>0.1.0</version>
-  <description>ROS2 node for LLM-based behavior tree generation using Llama 3.2-1B</description>
+  <description>ROS2 node for publishing BehaviorTree XML for visualization in Groot2/Foxglove</description>
   <maintainer email="your.email@example.com">Your Name</maintainer>
   <license>MIT</license>
 
@@ -11,7 +11,7 @@
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
-  <depend>std_srvs</depend>
+  <depend>nav2_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

@@ -144,7 +144,8 @@ class BTGenerator:
         max_tokens: int = 2048,
         temperature: float = 0.6,
         use_few_shot: bool = True,
-        prompt_format: str = "chat"
+        prompt_format: str = "chat",
+        rewritten_input: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Generate BehaviorTree XML from natural language command
@@ -155,6 +156,7 @@ class BTGenerator:
             temperature: Sampling temperature
             use_few_shot: Whether to include few-shot examples in prompt
             prompt_format: Format of prompt - "chat" (Llama chat) or "alpaca" (instruction format)
+            rewritten_input: Rewritten input from query rewriter (used directly in prompt)
 
         Returns:
             Dictionary with:
@@ -187,15 +189,11 @@ class BTGenerator:
             logger.info(f"Prompt format: {prompt_format}")
 
             if prompt_format == "alpaca":
-                prompt = build_alpaca_prompt(command, use_few_shot=use_few_shot)
+                prompt = build_alpaca_prompt(command, use_few_shot=use_few_shot, rewritten_input=rewritten_input)
             else:
                 prompt = build_prompt(command, use_few_shot=use_few_shot, output_format="xml", tokenizer=self.tokenizer)
 
-            logger.info(f"FULL PROMPT LENGTH: {len(prompt)} chars")
-            logger.info("=" * 80)
-            logger.info("FULL PROMPT:")
-            logger.info(prompt)
-            logger.info("=" * 80)
+            logger.info(f"Prompt length: {len(prompt)} chars")
 
             xml_result, error = self.generate_xml(prompt, max_tokens, temperature)
 

@@ -76,19 +76,29 @@ def build_prompt(command: str, use_few_shot: bool = True, output_format: str = "
     return prompt
 
 
-def build_alpaca_prompt(command: str, use_few_shot: bool = False) -> str:
+def build_alpaca_prompt(command: str, use_few_shot: bool = False, rewritten_input: Optional[str] = None) -> str:
     """
-    Build ultra-simple Alpaca prompt matching the paper's example EXACTLY
+    Build Alpaca prompt matching the training data format
 
     Args:
-        command: Natural language command from user
+        command: Natural language command from user (used if rewritten_input not provided)
         use_few_shot: Whether to include few-shot examples (ignored - always False for now)
+        rewritten_input: Rewritten input from query rewriter (used directly)
 
     Returns:
         Alpaca-formatted prompt string
     """
+    # System instruction
     prompt = f"### Instruction:\n{ALPACA_INSTRUCTION}\n\n"
-    prompt += f"### Input:\nThe behavior tree should: {command}\n\n{AVAILABLE_ACTIONS}\n\n"
+
+    # User input
+    if rewritten_input:
+        # Use rewritten input directly (from query rewriter)
+        prompt += f"### Input:\n{rewritten_input}\n\n"
+    else:
+        # Fallback: basic format with command
+        prompt += f"### Input:\nThe behavior tree should: {command}\n\n{AVAILABLE_ACTIONS}\n\n"
+
     prompt += "### Response:\n"
 
     return prompt

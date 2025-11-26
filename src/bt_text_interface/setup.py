@@ -17,7 +17,6 @@ setup(
     maintainer_email='noreply@example.com',
     description='ROS2 action server for BehaviorTree generation from text commands',
     license='Apache-2.0',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'bt_interface_node = bt_text_interface.bt_interface_node:main',

@@ -1,7 +1,7 @@
 [
   {
-    "command": "Navigate to the kitchen",
-    "xml": "<?xml version=\"1.0\"?>\n<root BTCPP_format=\"4\" main_tree_to_execute=\"NavigateToKitchen\">\n  <BehaviorTree ID=\"NavigateToKitchen\">\n    <Sequence name=\"NavigateSequence\">\n      <ComputePathToPose goal=\"{kitchen_pose}\" path=\"{path}\" planner_id=\"GridBased\"/>\n      <FollowPath path=\"{path}\" controller_id=\"FollowPath\"/>\n    </Sequence>\n  </BehaviorTree>\n</root>"
+    "command": "Move forward 2 meters",
+    "xml": "<?xml version=\"1.0\"?>\n<root BTCPP_format=\"4\" main_tree_to_execute=\"MoveForward\">\n  <BehaviorTree ID=\"MoveForward\">\n    <Sequence name=\"MoveSequence\">\n      <ComputePathToPose goal=\"{goal}\" path=\"{path}\" planner_id=\"GridBased\"/>\n      <FollowPath path=\"{path}\" controller_id=\"FollowPath\"/>\n    </Sequence>\n  </BehaviorTree>\n</root>"
   },
   {
     "command": "Rotate 90 degrees",

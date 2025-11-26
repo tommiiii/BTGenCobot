@@ -95,8 +95,8 @@ private:
 
   // Detection state
   std::string object_description_;
-  double box_threshold_;
   bool service_call_sent_;
+  double box_threshold_;
   rclcpp::Client<btgencobot_interfaces::srv::DetectObject>::SharedFuture future_result_;
 };
 

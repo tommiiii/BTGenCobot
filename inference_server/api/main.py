@@ -39,12 +39,19 @@ async def lifespan(app: FastAPI):
 
     try:
         from core.inference import initialize_generator
+        from core.query_rewriter import initialize_rewriter
+
         logger.info("Loading model...")
         state.generator = initialize_generator()
         state.model_loaded = True
         logger.info("Model loaded successfully!")
+
+        logger.info("Initializing query rewriter...")
+        initialize_rewriter()
+        logger.info("Query rewriter initialized!")
+
     except Exception as e:
-        logger.error(f"Failed to load model: {str(e)}")
+        logger.error(f"Failed to initialize: {str(e)}")
         state.model_loaded = False
 
     logger.info("Server ready to accept requests")
@@ -70,6 +77,7 @@ class GenerateBTRequest(BaseModel):
     temperature: float = Field(0.6, description="Sampling temperature", ge=0.0, le=2.0)
     use_few_shot: bool = Field(False, description="Whether to include few-shot examples in prompt")
     prompt_format: str = Field("chat", description="Prompt format: 'chat' (Llama chat) or 'alpaca' (instruction format)")
+    use_query_rewriting: bool = Field(False, description="Whether to use LLM query rewriting to expand command")
 
     class Config:
         json_schema_extra = {
@@ -78,7 +86,8 @@ class GenerateBTRequest(BaseModel):
                 "max_tokens": 1024,
                 "temperature": 0.6,
                 "use_few_shot": False,
-                "prompt_format": "alpaca"
+                "prompt_format": "alpaca",
+                "use_query_rewriting": False
             }
         }
 
@@ -171,17 +180,32 @@ async def generate_bt(request: GenerateBTRequest):
     logger.info("=" * 80)
     logger.info(f"Received BT generation request")
     logger.info(f"Command: {request.command}")
-    logger.info(f"Max tokens: {request.max_tokens}, Temp: {request.temperature}, Few-shot: {request.use_few_shot}, Format: {request.prompt_format}")
+    logger.info(f"Max tokens: {request.max_tokens}, Temp: {request.temperature}, Few-shot: {request.use_few_shot}, Format: {request.prompt_format}, Query rewriting: {request.use_query_rewriting}")
 
     try:
         start_time = time.time()
+
+        # Apply query rewriting if requested
+        rewritten_input = None
+        if request.use_query_rewriting:
+            from core.query_rewriter import rewrite_command
+            logger.info("Applying query rewriting...")
+            rewritten_input = rewrite_command(request.command)
+            if rewritten_input:
+                logger.info("=" * 80)
+                logger.info("REWRITTEN INPUT:")
+                logger.info(rewritten_input)
+                logger.info("=" * 80)
+            else:
+                logger.warning("Query rewriting failed, using original command")
 
         result = state.generator.generate_bt(
             command=request.command,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
             use_few_shot=request.use_few_shot,
-            prompt_format=request.prompt_format
+            prompt_format=request.prompt_format,
+            rewritten_input=rewritten_input
         )
 
         if result["success"]:
