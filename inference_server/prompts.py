@@ -76,20 +76,29 @@ def build_prompt(command: str, use_few_shot: bool = True, output_format: str = "
     return prompt
 
 
-def build_alpaca_prompt(command: str, use_few_shot: bool = False, rewritten_input: Optional[str] = None) -> str:
+def build_alpaca_prompt(command: str, use_few_shot: bool = False, rewritten_input: Optional[str] = None, custom_instruction: Optional[str] = None) -> str:
     """
     Build Alpaca prompt matching the training data format
 
     Args:
         command: Natural language command from user (used if rewritten_input not provided)
-        use_few_shot: Whether to include few-shot examples (ignored - always False for now)
+        use_few_shot: Whether to include few-shot examples
         rewritten_input: Rewritten input from query rewriter (used directly)
+        custom_instruction: Optional custom instruction to override ALPACA_INSTRUCTION
 
     Returns:
         Alpaca-formatted prompt string
     """
-    # System instruction
-    prompt = f"### Instruction:\n{ALPACA_INSTRUCTION}\n\n"
+    # System instruction (use custom if provided, otherwise default)
+    instruction = custom_instruction if custom_instruction is not None else ALPACA_INSTRUCTION
+    prompt = f"### Instruction:\n{instruction}\n\n"
+
+    # Add few-shot examples if requested
+    if use_few_shot:
+        for example in FEW_SHOT_EXAMPLES:
+            # Examples now already contain "Actions:" format
+            prompt += f"### Input:\n{example['command']}\n\n"
+            prompt += f"### Response:\n{example['xml']}\n\n"
 
     # User input
     if rewritten_input:

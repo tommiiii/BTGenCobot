@@ -9,9 +9,12 @@ version_val: "\"1.0\""
 root: "<root" " " "BTCPP_format=\"4\"" " " main_tree_attr ((" " | "\t") attribute)* " "? ">" WS? behavior_tree WS? "</root>"
 main_tree_attr: "main_tree_to_execute=\"" att_value_content "\""
 
-behavior_tree: "<BehaviorTree" ((" " | "\t") attribute)* " "? ">" WS? root_control WS? "</BehaviorTree>"
+behavior_tree: "<BehaviorTree" ((" " | "\t") attribute)* " "? ">" WS? bt_content WS? "</BehaviorTree>"
 
-// Root level: MUST be a control node containing actions (no bare actions allowed)
+// Root level: can be a single action OR a control node
+bt_content: action_node | root_control
+
+// Control nodes for complex behaviors
 root_control: simple_sequence | simple_fallback | simple_parallel
 
 // Simple control nodes contain only actions (no nested control nodes)
@@ -23,41 +26,39 @@ simple_parallel: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? action_list 
 action_list: action_node (WS? action_node)*
 
 // Action nodes (always self-closing)
-action_node: compute_path | follow_path | spin | backup | wait | detect_obj | pick_obj | place_obj
+// Spin listed first to reduce bias, then others alphabetically
+action_node: spin | drive_on_heading | backup | detect_obj | pick_obj | place_obj | wait | compute_path | follow_path
 
-// Action nodes with specific parameters (at least one attribute required)
-compute_path: "<ComputePathToPose" ((" " | "\t") compute_path_attr)+ " "? "/>"
-follow_path: "<FollowPath" ((" " | "\t") follow_path_attr)+ " "? "/>"
-spin: "<Spin" " " spin_dist_attr ((" " | "\t") name_attr)? " "? "/>"
-backup: "<BackUp" ((" " | "\t") backup_attr)+ " "? "/>"
-wait: "<Wait" ((" " | "\t") wait_attr)+ " "? "/>"
-detect_obj: "<DetectObject" ((" " | "\t") detect_obj_attr)+ " "? "/>"
-pick_obj: "<PickObject" ((" " | "\t") pick_obj_attr)+ " "? "/>"
-place_obj: "<PlaceObject" ((" " | "\t") place_obj_attr)+ " "? "/>"
-
-// Parameter constraints for each action
-compute_path_attr: (goal_attr | path_attr | planner_id_attr | name_attr)
-follow_path_attr: (path_attr | controller_id_attr | name_attr)
-backup_attr: (backup_dist_attr | backup_speed_attr | name_attr)
-wait_attr: (wait_duration_attr | name_attr)
-detect_obj_attr: (object_description_attr | target_pose_attr | name_attr)
-pick_obj_attr: (target_pose_attr | name_attr)
-place_obj_attr: (target_pose_attr | name_attr)
+// Action nodes with mandatory and optional attributes (no duplicates allowed)
+// Format: required attributes first, then optional ones in fixed order
+compute_path: "<ComputePathToPose" " " goal_attr " " path_attr (" " planner_id_attr)? (" " name_attr)? " "? "/>"
+follow_path: "<FollowPath" " " path_attr (" " controller_id_attr)? (" " name_attr)? " "? "/>"
+spin: "<Spin" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
+drive_on_heading: "<DriveOnHeading" " " dist_to_travel_attr " " speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
+backup: "<BackUp" " " backup_dist_attr " " backup_speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
+wait: "<Wait" " " wait_duration_attr (" " name_attr)? " "? "/>"
+detect_obj: "<DetectObject" " " object_description_attr " " target_pose_attr (" " name_attr)? " "? "/>"
+pick_obj: "<PickObject" " " target_pose_attr (" " name_attr)? " "? "/>"
+place_obj: "<PlaceObject" " " target_pose_attr (" " name_attr)? " "? "/>"
 
 // Specific parameter definitions
 goal_attr: "goal" " "? "=" " "? "\"" att_value_content "\""
 path_attr: "path" " "? "=" " "? "\"" att_value_content "\""
 planner_id_attr: "planner_id" " "? "=" " "? "\"" att_value_content "\""
 controller_id_attr: "controller_id" " "? "=" " "? "\"" att_value_content "\""
-spin_dist_attr: "spin_dist" " "? "=" " "? "\"" att_value_content "\""
-backup_dist_attr: "backup_dist" " "? "=" " "? "\"" att_value_content "\""
-backup_speed_attr: "backup_speed" " "? "=" " "? "\"" att_value_content "\""
-wait_duration_attr: "wait_duration" " "? "=" " "? "\"" att_value_content "\""
+spin_dist_attr: "spin_dist" " "? "=" " "? "\"" ("-" numeric_value | numeric_value) "\""
+dist_to_travel_attr: "dist_to_travel" " "? "=" " "? "\"" numeric_value "\""
+speed_attr: "speed" " "? "=" " "? "\"" numeric_value "\""
+backup_dist_attr: "backup_dist" " "? "=" " "? "\"" numeric_value "\""
+backup_speed_attr: "backup_speed" " "? "=" " "? "\"" numeric_value "\""
+time_allowance_attr: "time_allowance" " "? "=" " "? "\"" numeric_value "\""
+wait_duration_attr: "wait_duration" " "? "=" " "? "\"" numeric_value "\""
 object_description_attr: "object_description" " "? "=" " "? "\"" att_value_content "\""
 target_pose_attr: "target_pose" " "? "=" " "? "\"" att_value_content "\""
 name_attr: "name" " "? "=" " "? "\"" att_value_content "\""
 
-att_value_content: /[^<&"]*/
+numeric_value: /[0-9]+\.?[0-9]*/
+att_value_content: /[^<&";]*/
 
 // Generic attribute for control nodes and root elements
 attribute: att_name " "? "=" " "? "\"" att_value_content "\""

@@ -78,6 +78,7 @@ class GenerateBTRequest(BaseModel):
     use_few_shot: bool = Field(False, description="Whether to include few-shot examples in prompt")
     prompt_format: str = Field("chat", description="Prompt format: 'chat' (Llama chat) or 'alpaca' (instruction format)")
     use_query_rewriting: bool = Field(False, description="Whether to use LLM query rewriting to expand command")
+    custom_instruction: str | None = Field(None, description="Optional custom instruction to override default alpaca_instruction.txt")
 
     class Config:
         json_schema_extra = {
@@ -205,12 +206,15 @@ async def generate_bt(request: GenerateBTRequest):
             temperature=request.temperature,
             use_few_shot=request.use_few_shot,
             prompt_format=request.prompt_format,
-            rewritten_input=rewritten_input
+            rewritten_input=rewritten_input,
+            custom_instruction=request.custom_instruction
         )
 
         if result["success"]:
             state.successful_requests += 1
             logger.info(f"✓ Generation successful ({result['method_used']}) in {result['generation_time_ms']}ms")
+            logger.info("Generated XML:")
+            logger.info(result['bt_xml'])
         else:
             state.failed_requests += 1
             logger.warning(f"✗ Generation failed: {result['error']}")

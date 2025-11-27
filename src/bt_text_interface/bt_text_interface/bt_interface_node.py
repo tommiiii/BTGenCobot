@@ -194,8 +194,8 @@ class BTInterfaceNode(Node):
                 json={
                     'command': command,
                     'max_tokens': 1024,
-                    'temperature': 0.6,
-                    'use_few_shot': False,
+                    'temperature': 0.1,
+                    'use_few_shot': True,
                     'prompt_format': 'alpaca',
                     'use_query_rewriting': True
                 },

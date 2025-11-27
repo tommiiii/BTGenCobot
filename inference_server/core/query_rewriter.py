@@ -8,14 +8,19 @@ logger = logging.getLogger(__name__)
 
 AVAILABLE_ACTIONS = """
 Available Actions (use EXACT parameter names shown):
-- ComputePathToPose: goal="{goal}", path="{path}", planner_id="GridBased"
-- FollowPath: path="{path}", controller_id="FollowPath"
-- Spin: spin_dist="X.XX" (in radians: 90°=1.57, 180°=3.14, left=positive, right=negative)
+- ComputePathToPose: goal="{goal}", path="{path}", planner_id="GridBased" [For navigation to NAMED LOCATIONS like "kitchen", "bedroom"]
+- FollowPath: path="{path}", controller_id="FollowPath" [Always follows ComputePathToPose]
+- Spin: spin_dist="X.XX" (in radians: 90°=1.57, 180°=3.14, left=positive, right=negative) [For rotation in place]
+- DriveOnHeading: dist_to_travel="X.X", speed="X.X"
+  * dist_to_travel is ALWAYS POSITIVE for forward movement
+  * Example: dist_to_travel="2.0", speed="0.2" for moving forward 2 meters
 - BackUp: backup_dist="X.X", backup_speed="X.X"
-- Wait: wait_duration="X"
-- DetectObject: object_description="...", target_pose="{target_pose}"
-- PickObject: target_pose="{target_pose}"
-- PlaceObject: target_pose="{target_pose}"
+  * backup_dist is ALWAYS POSITIVE (robot moves backward)
+  * Example: backup_dist="1.0", backup_speed="0.1" for moving backward 1 meter
+- Wait: wait_duration="X" [For pausing]
+- DetectObject: object_description="...", target_pose="{target_pose}" [For vision-based object detection]
+- PickObject: target_pose="{target_pose}" [For grasping objects]
+- PlaceObject: target_pose="{target_pose}" [For placing objects]
 
 CRITICAL: Use these EXACT parameter names. Do NOT use variations like "angle", "spin_angle", "radians", etc.
 """
@@ -27,13 +32,26 @@ REWRITE_SYSTEM_PROMPT = f"""Transform simple robot commands into detailed behavi
 Rules:
 1. Mention exact parameter VALUES in the description (not just names)
 2. Rotation: left = positive value, right = negative value (90°=1.57, 180°=3.14)
-3. For navigation: List BOTH ComputePathToPose AND FollowPath
-4. List ONLY the actions needed
+3. For navigation to NAMED locations: List BOTH ComputePathToPose AND FollowPath
+4. For moving FORWARD by distance: Use DriveOnHeading (NOT BackUp, NOT ComputePathToPose)
+5. For moving BACKWARD by distance: Use BackUp
+6. List ONLY the actions needed
+7. CRITICAL: If the same action is used multiple times, list that action MULTIPLE times in the Actions line
 
-Output format:
-[Concise description with specific radian values, e.g. "spin_dist of -1.57 radians"]
+Output format (MUST start with Actions line):
+Actions: [All action instances needed, comma-separated, in execution order. List the same action MULTIPLE times if it's used multiple times]
 
-Actions: [Only action names, comma-separated]"""
+[Concise description mentioning specific parameter values for EACH action instance]
+
+Examples:
+- For "rotate left": "Actions: Spin" (with spin_dist="1.57")
+- For "rotate right": "Actions: Spin" (with spin_dist="-1.57")
+- For "move forward 2m": "Actions: DriveOnHeading" (with dist_to_travel="2.0", speed="0.2")
+- For "move backward 1m": "Actions: BackUp" (with backup_dist="1.0", backup_speed="0.1")
+- For "move forward 1m then backward 2m": "Actions: DriveOnHeading, BackUp" (first with dist_to_travel="1.0", second with backup_dist="2.0")
+- For "turn right then turn left": "Actions: Spin, Spin" (TWO Spin actions - first with spin_dist="-1.57", second with spin_dist="1.57")
+- For "go to kitchen": "Actions: ComputePathToPose, FollowPath" (both needed for navigation to named location)
+- For "pick red box": "Actions: DetectObject, ComputePathToPose, FollowPath, PickObject" """
 
 REWRITE_USER_TEMPLATE = """Transform this simple robot command into a detailed behavioral description:
 
