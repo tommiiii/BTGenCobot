@@ -205,6 +205,36 @@ Original: https://github.com/ROBOTIS-GIT/turtlebot3/blob/kinetic-devel/turtlebot
           <mean>0.0</mean>
           <stddev>0.007</stddev>
         </noise>
+        <lens>
+          <intrinsics>
+            <!-- fx, fy, cx, cy -->
+            <fx>554.3</fx>
+            <fy>554.3</fy>
+            <cx>320.5</cx>
+            <cy>240.5</cy>
+          </intrinsics>
+        </lens>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <!-- Add depth camera sensor -->
+  <gazebo reference="${prefix}camera_rgb_frame">
+    <sensor type="depth_camera" name="pi_depth_camera">
+      <update_rate>30</update_rate>
+      <always_on>true</always_on>
+      <topic>camera/depth</topic>
+      <camera>
+        <horizontal_fov>1.085595</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R_FLOAT32</format>
+        </image>
+        <clip>
+          <near>0.03</near>
+          <far>10.0</far>
+        </clip>
       </camera>
     </sensor>
   </gazebo>

@@ -2,7 +2,10 @@
 
 #include <stdexcept>
 #include <chrono>
+#include <cmath>
 #include "cv_bridge/cv_bridge.hpp"
+#include "tf2/LinearMath/Quaternion.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 using namespace std::chrono_literals;
 
@@ -148,7 +151,7 @@ BT::NodeStatus DetectObject::onRunning()
   }
 
   // Get depth at detected point
-  float depth = 1.0;  // Default depth if no depth camera
+  float depth = 1.5;  // Default depth if no depth camera (1.5m is reasonable for navigation)
   if (latest_depth_) {
     try {
       cv_bridge::CvImagePtr depth_ptr = cv_bridge::toCvCopy(
@@ -162,37 +165,120 @@ BT::NodeStatus DetectObject::onRunning()
       if (x >= 0 && x < depth_ptr->image.cols && y >= 0 && y < depth_ptr->image.rows) {
         depth = depth_ptr->image.at<float>(y, x);
 
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "Raw depth at pixel (%d, %d): %.2fm", x, y, depth);
+
         // Check for invalid depth
         if (std::isnan(depth) || depth <= 0.0) {
           RCLCPP_WARN(
             node_->get_logger(),
-            "Invalid depth at detection point, using estimated depth of 1.0m");
-          depth = 1.0;
+            "Invalid depth at detection point, using estimated depth of 1.5m");
+          depth = 1.5;
+        }
+        // Clamp depth to reasonable navigation range (0.5m to 5.0m)
+        else if (depth < 0.5) {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "Depth too close (%.2fm), clamping to 0.5m", depth);
+          depth = 0.5;
+        }
+        else if (depth > 5.0) {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "Depth too far (%.2fm), clamping to 5.0m", depth);
+          depth = 5.0;
         }
       }
     } catch (const std::exception & e) {
       RCLCPP_WARN(
         node_->get_logger(),
-        "Failed to get depth: %s. Using estimated depth of 1.0m",
+        "Failed to get depth: %s. Using estimated depth of 1.5m",
         e.what());
-      depth = 1.0;
+      depth = 1.5;
     }
   } else {
     RCLCPP_WARN_ONCE(
       node_->get_logger(),
-      "No depth data available. Using estimated depth of 1.0m");
+      "No depth data available. Using estimated depth of 1.5m");
   }
 
   // Convert pixel coordinates to 3D pose
+  // Use the frame_id from the latest image, but validate it exists in TF
+  std::string camera_frame = latest_image_->header.frame_id;
+
+  // Try to transform a test point to verify the frame exists
+  geometry_msgs::msg::TransformStamped test_transform;
+  bool frame_exists = false;
+  try {
+    test_transform = tf_buffer_->lookupTransform(
+      "map",
+      camera_frame,
+      tf2::TimePointZero,
+      tf2::durationFromSec(0.1));
+    frame_exists = true;
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Camera frame '%s' not found in TF tree: %s. Trying alternatives...",
+      camera_frame.c_str(),
+      ex.what());
+  }
+
+  // If frame doesn't exist, try common camera frame names
+  if (!frame_exists) {
+    std::vector<std::string> frame_candidates = {
+      "camera_rgb_optical_frame",
+      "base_footprint/camera_rgb_optical_frame",
+      "camera_link",
+      "base_footprint/camera_link",
+      "camera_rgb_frame",
+      "base_footprint/camera_rgb_frame"
+    };
+
+    for (const auto & candidate : frame_candidates) {
+      try {
+        test_transform = tf_buffer_->lookupTransform(
+          "map",
+          candidate,
+          tf2::TimePointZero,
+          tf2::durationFromSec(0.1));
+        camera_frame = candidate;
+        frame_exists = true;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "Using camera frame: %s",
+          camera_frame.c_str());
+        break;
+      } catch (const tf2::TransformException & ex) {
+        // Try next candidate
+        continue;
+      }
+    }
+
+    if (!frame_exists) {
+      RCLCPP_ERROR(
+        node_->get_logger(),
+        "Could not find any valid camera frame in TF tree!");
+      setOutput("detected", false);
+      setOutput("confidence", 0.0);
+      return BT::NodeStatus::FAILURE;
+    }
+  }
+
   geometry_msgs::msg::PoseStamped target_pose = pixelToPose(
     response->center_x,
     response->center_y,
-    depth);
+    depth,
+    camera_frame);
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "Detected '%s' at (%.2f, %.2f, %.2f) in %s frame with %.2f confidence",
+    "Detected '%s' at pixel (%.1f, %.1f) with depth %.2fm -> pose (%.2f, %.2f, %.2f) in %s frame (confidence: %.2f)",
     response->phrase.c_str(),
+    response->center_x,
+    response->center_y,
+    depth,
     target_pose.pose.position.x,
     target_pose.pose.position.y,
     target_pose.pose.position.z,
@@ -247,40 +333,97 @@ void DetectObject::cameraInfoCallback(const sensor_msgs::msg::CameraInfo::Shared
 geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
   float center_x,
   float center_y,
-  float depth_value)
+  float depth_value,
+  const std::string & frame_id)
 {
   geometry_msgs::msg::PoseStamped pose;
 
   // Pinhole camera model: convert pixel to 3D point in camera frame
-  // X = (x - cx) * Z / fx
-  // Y = (y - cy) * Z / fy
+  // In optical frame: X = right, Y = down, Z = forward (depth)
+  // X = (u - cx) * Z / fx
+  // Y = (v - cy) * Z / fy
   // Z = depth
 
-  double z = depth_value;
-  double x_3d = (center_x - cx_) * z / fx_;
-  double y_3d = (center_y - cy_) * z / fy_;
+  // Apply approach offset in camera frame (before transformation)
+  // Stop 30cm before the object by reducing depth
+  double approach_offset = 0.3;  // meters
+  double target_depth = depth_value;
+
+  if (target_depth > 0.5) {  // Only apply offset if object is reasonably far
+    target_depth = depth_value - approach_offset;
+  }
+
+  // Pinhole camera model: convert pixel to 3D point in camera frame
+  double x = (center_x - cx_) * target_depth / fx_;
+  double y = (center_y - cy_) * target_depth / fy_;
 
   // Create pose in camera optical frame
-  // Optical frame convention: X right, Y down, Z forward
-  pose.header.frame_id = "camera_optical_frame";
+  // ROS optical frame convention: +X right, +Y down, +Z forward
+  pose.header.frame_id = frame_id;
   pose.header.stamp = node_->now();
-  pose.pose.position.x = z;       // Z forward
-  pose.pose.position.y = -x_3d;   // X right (negated)
-  pose.pose.position.z = -y_3d;   // Y down (negated)
+  pose.pose.position.x = x;       // Right
+  pose.pose.position.y = y;       // Down
+  pose.pose.position.z = target_depth;   // Forward (depth with offset applied)
   pose.pose.orientation.w = 1.0;  // No rotation
 
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Camera frame pose: (%.2f, %.2f, %.2f) in %s (original depth: %.2fm, target depth: %.2fm)",
+    pose.pose.position.x,
+    pose.pose.position.y,
+    pose.pose.position.z,
+    frame_id.c_str(),
+    depth_value,
+    target_depth);
+
   try {
-    // Transform to map frame
+    // First, transform the ACTUAL object position (without approach offset) to get the true object location
+    geometry_msgs::msg::PoseStamped object_pose_camera;
+    object_pose_camera.header.frame_id = frame_id;
+    object_pose_camera.header.stamp = node_->now();
+    object_pose_camera.pose.position.x = (center_x - cx_) * depth_value / fx_;
+    object_pose_camera.pose.position.y = (center_y - cy_) * depth_value / fy_;
+    object_pose_camera.pose.position.z = depth_value;  // Original depth, not reduced
+    object_pose_camera.pose.orientation.w = 1.0;
+
+    geometry_msgs::msg::PoseStamped object_pose_map = tf_buffer_->transform(
+      object_pose_camera,
+      "map",
+      tf2::durationFromSec(1.0));
+
+    // Now transform the approach goal (with offset)
     geometry_msgs::msg::PoseStamped pose_map = tf_buffer_->transform(
       pose,
       "map",
       tf2::durationFromSec(1.0));
 
-    RCLCPP_DEBUG(
+    // For 2D navigation, set z=0 (ground level)
+    pose_map.pose.position.z = 0.0;
+    object_pose_map.pose.position.z = 0.0;
+
+    // Calculate orientation: robot at goal position should face toward the object
+    double dx = object_pose_map.pose.position.x - pose_map.pose.position.x;
+    double dy = object_pose_map.pose.position.y - pose_map.pose.position.y;
+    double yaw = std::atan2(dy, dx);
+
+    // Convert yaw to quaternion
+    tf2::Quaternion q;
+    q.setRPY(0, 0, yaw);
+    pose_map.pose.orientation.x = q.x();
+    pose_map.pose.orientation.y = q.y();
+    pose_map.pose.orientation.z = q.z();
+    pose_map.pose.orientation.w = q.w();
+
+    RCLCPP_INFO(
       node_->get_logger(),
-      "Transformed pose from %s to %s",
-      pose.header.frame_id.c_str(),
-      pose_map.header.frame_id.c_str());
+      "Navigation goal: (%.2f, %.2f, %.2f) in %s with yaw %.2f rad toward object at (%.2f, %.2f)",
+      pose_map.pose.position.x,
+      pose_map.pose.position.y,
+      pose_map.pose.position.z,
+      pose_map.header.frame_id.c_str(),
+      yaw,
+      object_pose_map.pose.position.x,
+      object_pose_map.pose.position.y);
 
     return pose_map;
 

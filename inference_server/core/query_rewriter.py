@@ -18,11 +18,13 @@ Available Actions (use EXACT parameter names shown):
   * backup_dist is ALWAYS POSITIVE (robot moves backward)
   * Example: backup_dist="1.0", backup_speed="0.1" for moving backward 1 meter
 - Wait: wait_duration="X" [For pausing]
-- DetectObject: object_description="...", target_pose="{target_pose}" [For vision-based object detection]
-- PickObject: target_pose="{target_pose}" [For grasping objects]
-- PlaceObject: target_pose="{target_pose}" [For placing objects]
+- DetectObject: object_description="..." [For vision-based object detection - DO NOT specify target_pose parameter]
+- PickObject: [For grasping objects - DO NOT specify parameters]
+- PlaceObject: [For placing objects - DO NOT specify parameters]
 
-CRITICAL: Use these EXACT parameter names. Do NOT use variations like "angle", "spin_angle", "radians", etc.
+CRITICAL:
+- Use these EXACT parameter names. Do NOT use variations like "angle", "spin_angle", "radians", etc.
+- For DetectObject, PickObject, PlaceObject: Only mention the object_description value (e.g., "red cup"), never mention target_pose or other output parameters
 """
 
 REWRITE_SYSTEM_PROMPT = f"""Transform simple robot commands into detailed behavioral descriptions for behavior tree generation.
@@ -32,11 +34,12 @@ REWRITE_SYSTEM_PROMPT = f"""Transform simple robot commands into detailed behavi
 Rules:
 1. Mention exact parameter VALUES in the description (not just names)
 2. Rotation: left = positive value, right = negative value (90°=1.57, 180°=3.14)
-3. For navigation to NAMED locations: List BOTH ComputePathToPose AND FollowPath
-4. For moving FORWARD by distance: Use DriveOnHeading (NOT BackUp, NOT ComputePathToPose)
-5. For moving BACKWARD by distance: Use BackUp
-6. List ONLY the actions needed
-7. CRITICAL: If the same action is used multiple times, list that action MULTIPLE times in the Actions line
+3. For navigating to NAMED locations (e.g., "kitchen", "bedroom"): List BOTH ComputePathToPose AND FollowPath
+4. For navigating to DETECTED OBJECTS (e.g., "red cup", "blue box"): List DetectObject, ComputePathToPose, FollowPath (and PickObject/PlaceObject if needed)
+5. For blind forward movement by distance (no target): Use DriveOnHeading
+6. For blind backward movement by distance: Use BackUp
+7. List ONLY the actions needed
+8. CRITICAL: If the same action is used multiple times, list that action MULTIPLE times in the Actions line
 
 Output format (MUST start with Actions line):
 Actions: [All action instances needed, comma-separated, in execution order. List the same action MULTIPLE times if it's used multiple times]
@@ -48,10 +51,11 @@ Examples:
 - For "rotate right": "Actions: Spin" (with spin_dist="-1.57")
 - For "move forward 2m": "Actions: DriveOnHeading" (with dist_to_travel="2.0", speed="0.2")
 - For "move backward 1m": "Actions: BackUp" (with backup_dist="1.0", backup_speed="0.1")
-- For "move forward 1m then backward 2m": "Actions: DriveOnHeading, BackUp" (first with dist_to_travel="1.0", second with backup_dist="2.0")
 - For "turn right then turn left": "Actions: Spin, Spin" (TWO Spin actions - first with spin_dist="-1.57", second with spin_dist="1.57")
 - For "go to kitchen": "Actions: ComputePathToPose, FollowPath" (both needed for navigation to named location)
-- For "pick red box": "Actions: DetectObject, ComputePathToPose, FollowPath, PickObject" """
+- For "get closer to the red cup": "Actions: DetectObject, ComputePathToPose, FollowPath" (detect object, then navigate to it)
+- For "pick up red box": "Actions: DetectObject, ComputePathToPose, FollowPath, PickObject" (detect, navigate, pick)
+- For "place the cup on the table": "Actions: DetectObject, ComputePathToPose, FollowPath, PlaceObject" (detect table, navigate, place)"""
 
 REWRITE_USER_TEMPLATE = """Transform this simple robot command into a detailed behavioral description:
 

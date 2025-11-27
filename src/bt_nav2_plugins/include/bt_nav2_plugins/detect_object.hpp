@@ -67,7 +67,8 @@ private:
   geometry_msgs::msg::PoseStamped pixelToPose(
     float center_x,
     float center_y,
-    float depth_value);
+    float depth_value,
+    const std::string & frame_id);
 
   // Node and TF
   rclcpp::Node::SharedPtr node_;

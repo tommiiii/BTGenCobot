@@ -131,7 +131,9 @@ def generate_launch_description():
             '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
             '/model/turtlebot3_manipulation/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry',
             '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
-            '/camera@sensor_msgs/msg/Image[gz.msgs.Image'
+            '/camera@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/camera/depth@sensor_msgs/msg/Image[gz.msgs.Image'
         ],
         output='screen',
         remappings=[
