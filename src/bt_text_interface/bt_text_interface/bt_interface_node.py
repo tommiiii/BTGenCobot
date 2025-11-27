@@ -57,12 +57,23 @@ class BTInterfaceNode(Node):
         self.current_goal_handle = None
         self.current_nav_goal_handle = None
         self.is_executing = False
+        self.last_bt_xml = None  # Store last executed BT for republishing
 
     def _setup_interfaces(self):
         """Setup ROS interfaces: publishers, subscribers, action servers/clients, services"""
         self.action_callback_group = ReentrantCallbackGroup()
 
-        self._bt_xml_publisher = self.create_publisher(String, '/generated_behavior_tree', 10)
+        # Use TRANSIENT_LOCAL durability so late-joining subscribers get the last message
+        qos_latched = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        self._bt_xml_publisher = self.create_publisher(String, '/generated_behavior_tree', qos_latched)
+
+        # Republish last BT every 2 seconds for visibility
+        self.bt_republish_timer = self.create_timer(2.0, self._republish_last_bt)
 
         self._action_server = ActionServer(
             self, GenerateAndExecuteBT, '/generate_and_execute_bt',
@@ -152,6 +163,8 @@ class BTInterfaceNode(Node):
             result.bt_xml_path = str(bt_file_path)
             self.get_logger().info(f'BT written to: {bt_file_path}')
 
+            # Store and publish the BT
+            self.last_bt_xml = bt_xml
             bt_msg = String()
             bt_msg.data = bt_xml
             self._bt_xml_publisher.publish(bt_msg)
@@ -408,6 +421,13 @@ class BTInterfaceNode(Node):
             self.get_logger().error(response.message)
 
         return response
+
+    def _republish_last_bt(self):
+        """Periodically republish the last executed BT for late-joining subscribers"""
+        if self.last_bt_xml is not None:
+            bt_msg = String()
+            bt_msg.data = self.last_bt_xml
+            self._bt_xml_publisher.publish(bt_msg)
 
 
 def main(args=None):

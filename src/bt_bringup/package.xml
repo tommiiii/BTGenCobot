@@ -13,7 +13,6 @@
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>nav2_amcl</exec_depend>
   <exec_depend>foxglove_bridge</exec_depend>
-  <exec_depend>bt_xml_publisher</exec_depend>
   <exec_depend>bt_nav2_plugins</exec_depend>
   <exec_depend>bt_text_interface</exec_depend>
   <exec_depend>vision_services</exec_depend>
