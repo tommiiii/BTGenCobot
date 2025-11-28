@@ -113,7 +113,7 @@ goal_attr: "goal" " "? "=" " "? "\"" att_value_content "\""
 path_attr: "path" " "? "=" " "? "\"" att_value_content "\""
 planner_id_attr: "planner_id" " "? "=" " "? "\"" att_value_content "\""
 controller_id_attr: "controller_id" " "? "=" " "? "\"" att_value_content "\""
-spin_dist_attr: ("spin_dist" " "? "=" " "? "\"-" numeric_value "\"") | ("spin_dist" " "? "=" " "? "\"" numeric_value "\"")
+spin_dist_attr: "spin_dist" " "? "=" " "? "\"" "-"? numeric_value "\""
 dist_to_travel_attr: "dist_to_travel" " "? "=" " "? "\"" numeric_value "\""
 speed_attr: "speed" " "? "=" " "? "\"" numeric_value "\""
 backup_dist_attr: "backup_dist" " "? "=" " "? "\"" numeric_value "\""
@@ -331,7 +331,6 @@ class BTGenerator:
         command: str,
         max_tokens: int = 2048,
         temperature: float = 0.6,
-        use_few_shot: bool = True,
         prompt_format: str = "chat",
         rewritten_input: Optional[str] = None,
         custom_instruction: Optional[str] = None
@@ -343,7 +342,6 @@ class BTGenerator:
             command: Natural language command
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
-            use_few_shot: Whether to include few-shot examples in prompt
             prompt_format: Format of prompt - "chat" (Llama chat) or "alpaca" (instruction format)
             rewritten_input: Rewritten input from query rewriter (used directly in prompt)
             custom_instruction: Optional custom instruction to override default alpaca_instruction.txt
@@ -391,9 +389,9 @@ class BTGenerator:
                         custom_grammar = None
 
             if prompt_format == "alpaca":
-                prompt = build_alpaca_prompt(command, use_few_shot=use_few_shot, rewritten_input=rewritten_input, custom_instruction=custom_instruction)
+                prompt = build_alpaca_prompt(command, rewritten_input=rewritten_input, custom_instruction=custom_instruction)
             else:
-                prompt = build_prompt(command, use_few_shot=use_few_shot, output_format="xml", tokenizer=self.tokenizer)
+                prompt = build_prompt(command, output_format="xml", tokenizer=self.tokenizer)
 
             logger.info(f"=== PROMPT ===\n{prompt}\n=== END PROMPT ===")
             xml_result, error = self.generate_xml(prompt, max_tokens, temperature, custom_grammar=custom_grammar)

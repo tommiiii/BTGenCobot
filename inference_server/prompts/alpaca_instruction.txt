@@ -12,8 +12,13 @@ CRITICAL: ComputePathToPose and FollowPath always go together - if both are list
 Parameter formats (use EXACT attribute names):
 - ComputePathToPose: goal="{goal}" path="{path}"
 - FollowPath: path="{path}"
-- Spin: spin_dist="value" time_allowance="30" (positive=left, negative=right)
-  * Example: <Spin spin_dist="-1.57" time_allowance="30"/> for right rotation
+- Spin: spin_dist="value" time_allowance="30"
+  * RIGHT/CLOCKWISE rotation = NEGATIVE value (MUST include minus sign: -)
+  * LEFT/COUNTERCLOCKWISE rotation = POSITIVE value (no minus sign)
+  * RIGHT 90° example: <Spin spin_dist="-1.57" time_allowance="30"/>
+  * LEFT 90° example: <Spin spin_dist="1.57" time_allowance="30"/>
+  * If description says RIGHT/CLOCKWISE/negative, output MUST have minus sign: spin_dist="-1.57"
+  * If description says LEFT/COUNTERCLOCKWISE/positive, output has NO minus sign: spin_dist="1.57"
 - DriveOnHeading: dist_to_travel="value" speed="value" time_allowance="30"
   * dist_to_travel is ALWAYS POSITIVE for forward movement
   * Example: <DriveOnHeading dist_to_travel="2.0" speed="0.2" time_allowance="30"/> for forward 2 meters
@@ -21,8 +26,11 @@ Parameter formats (use EXACT attribute names):
   * backup_dist is ALWAYS POSITIVE (robot moves backward)
   * Example: <BackUp backup_dist="1.0" backup_speed="0.1" time_allowance="30"/> for backward 1 meter
 - Wait: wait_duration="value"
-- DetectObject: object_description="text" target_pose="{target_pose}"
-- PickObject: target_pose="{target_pose}"
-- PlaceObject: target_pose="{target_pose}"
+- DetectObject: object_description="text" target_pose="{goal}"
+  * CRITICAL: DetectObject outputs to target_pose. Use target_pose="{goal}" when followed by ComputePathToPose
+- PickObject: target_pose="{goal}"
+- PlaceObject: target_pose="{goal}"
+
+CRITICAL FOR SPIN: When the input says spin_dist="-1.57" or mentions RIGHT/CLOCKWISE, you MUST output the minus sign in the XML.
 
 Extract parameter values from the description. Output ONLY valid XML - no explanations.

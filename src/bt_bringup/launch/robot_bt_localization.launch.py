@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Complete Launch File for BT Generation System
-Launches Gazebo, SLAM/Nav2, BT Interface Node, and Foxglove Bridge
-Based on full_nav2_bringup.launch.py
+Complete Launch File for BT Generation System with Localization (No SLAM)
+Launches Gazebo, Nav2 with pre-built map, BT Interface Node, and Foxglove Bridge
+Uses AMCL for localization instead of SLAM
 """
 
 import os
@@ -22,7 +22,7 @@ def generate_launch_description():
     # Launch configuration variables
     use_sim_time = LaunchConfiguration('use_sim_time')
     world = LaunchConfiguration('world')
-    slam_mode = LaunchConfiguration('slam_mode')
+    map_file = LaunchConfiguration('map_file')
     inference_server_url = LaunchConfiguration('inference_server_url')
     bt_output_dir = LaunchConfiguration('bt_output_dir')
 
@@ -39,10 +39,10 @@ def generate_launch_description():
         description='Full path to world file to load'
     )
 
-    declare_slam_mode_cmd = DeclareLaunchArgument(
-        'slam_mode',
-        default_value='true',
-        description='Whether to run in SLAM mode (true) or use pre-built map (false)'
+    declare_map_file_cmd = DeclareLaunchArgument(
+        'map_file',
+        default_value='/workspace/maps/my_map.yaml',
+        description='Full path to map yaml file to use for localization'
     )
 
     declare_inference_server_url_cmd = DeclareLaunchArgument(
@@ -69,14 +69,72 @@ def generate_launch_description():
         }.items()
     )
 
-    # Launch SLAM Toolbox
-    slam_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_bt_bringup, 'launch', 'slam.launch.py')
-        ),
-        launch_arguments={
-            'use_sim_time': use_sim_time
-        }.items()
+    # Launch Map Server (instead of SLAM)
+    map_server_node = Node(
+        package='nav2_map_server',
+        executable='map_server',
+        name='map_server',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'yaml_filename': map_file
+        }]
+    )
+
+    # Launch Lifecycle Manager for Map Server
+    map_lifecycle_node = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='map_lifecycle_manager',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'autostart': True,
+            'node_names': ['map_server']
+        }]
+    )
+
+    # Launch AMCL for localization
+    amcl_node = Node(
+        package='nav2_amcl',
+        executable='amcl',
+        name='amcl',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'global_frame_id': 'map',
+            'odom_frame_id': 'odom',
+            'base_frame_id': 'base_footprint',
+            'scan_topic': 'scan',
+            'robot_model_type': 'nav2_amcl::DifferentialMotionModel',
+            'set_initial_pose': True,
+            'initial_pose.x': 0.0,
+            'initial_pose.y': 0.0,
+            'initial_pose.z': 0.0,
+            'initial_pose.yaw': 0.0,
+            # AMCL parameters
+            'min_particles': 500,
+            'max_particles': 2000,
+            'update_min_d': 0.1,  # Update after 10cm movement
+            'update_min_a': 0.1,  # Update after ~6° rotation
+            'resample_interval': 1,
+            'transform_tolerance': 0.5,
+            'recovery_alpha_slow': 0.0,
+            'recovery_alpha_fast': 0.0,
+        }]
+    )
+
+    # Lifecycle manager for AMCL
+    amcl_lifecycle_node = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='amcl_lifecycle_manager',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'autostart': True,
+            'node_names': ['amcl']
+        }]
     )
 
     # Launch Nav2
@@ -120,7 +178,7 @@ def generate_launch_description():
             'device': 'auto',
             'publish_debug_images': True,
         }],
-        output='screen',
+        output='screen'
     )
 
 
@@ -151,13 +209,20 @@ def generate_launch_description():
     # Add launch arguments
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_world_cmd)
-    ld.add_action(declare_slam_mode_cmd)
+    ld.add_action(declare_map_file_cmd)
     ld.add_action(declare_inference_server_url_cmd)
     ld.add_action(declare_bt_output_dir_cmd)
 
     # Add launch files
     ld.add_action(gazebo_launch)
-    ld.add_action(slam_launch)
+
+    # Add Map Server and AMCL (instead of SLAM)
+    ld.add_action(map_server_node)
+    ld.add_action(map_lifecycle_node)
+    ld.add_action(amcl_node)
+    ld.add_action(amcl_lifecycle_node)
+
+    # Add Nav2
     ld.add_action(nav2_launch)
 
     # Add BT Interface Node (main action server)

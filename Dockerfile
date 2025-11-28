@@ -3,7 +3,7 @@
 FROM ros:jazzy
 SHELL ["/bin/bash", "-c"]
 
-# Install all dependencies in one big layer for better caching
+# Install minimal dependencies for robot simulation
 RUN apt-get update && apt-get install -y \
   ros-jazzy-desktop \
   python3-pip \
@@ -39,101 +39,34 @@ RUN apt-get update && apt-get install -y \
   novnc \
   websockify \
   xfce4 \
-  xfce4-goodies \
   dbus-x11 \
-  curl \
   wget \
   git \
-  unzip \
-  ripgrep \
-  fd-find \
   build-essential \
-  ninja-build \
-  gettext \
   cmake \
-  nodejs \
-  npm \
-  sqlite3 \
-  libsqlite3-dev \
-  luarocks \
-  python3-venv \
-  jupyter-core \
-  imagemagick \
   libfmt-dev \
   libconsole-bridge-dev \
   ros-jazzy-iceoryx-binding-c && \
   rm -rf /var/lib/apt/lists/*
 
-# Install Python packages for nvim plugins (molten, dap-python, etc.) and tree-sitter CLI
-# Use --ignore-installed to avoid conflicts with system packages
-# Upgrade pbr to 7.0+ to fix pkg_resources deprecation warnings (critical for Setuptools 81)
-RUN pip3 install --break-system-packages --ignore-installed \
-  'pbr>=7.0.0' \
-  pynvim \
-  debugpy \
-  jupyter \
-  jupyter-client \
-  ipykernel \
-  nbformat \
-  pillow \
-  cairosvg \
-  pnglatex \
-  plotly \
-  pyperclip && \
-  npm install -g tree-sitter-cli
-
-# Install Grounding DINO dependencies for object detection
-# PyTorch with CUDA support
-# Note: Using numpy<2.0 for compatibility with ROS2 cv_bridge
-RUN pip3 install --break-system-packages --ignore-installed \
+# Install Python packages for vision (Florence-2 + SAM)
+# Using PyTorch for best text-prompted detection support
+RUN pip3 install --break-system-packages \
+  torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
+  pip3 install --break-system-packages \
   'numpy<2.0' \
-  torch \
-  torchvision \
+  pillow \
   opencv-python>=4.8.0 \
-  supervision>=0.16.0
-
-# Install Grounding DINO from GitHub (includes model configs)
-# Clone to /opt for system-wide access
-RUN cd /opt && \
-  git clone https://github.com/IDEA-Research/GroundingDINO.git && \
-  cd GroundingDINO && \
-  pip3 install --break-system-packages . && \
-  # Create symlink so configs are accessible
-  ln -sf /opt/GroundingDINO/groundingdino /usr/local/lib/python3.12/dist-packages/groundingdino 2>/dev/null || true
-
-# Note: Model weights are mounted from host at /workspace/models/grounding_dino/
-# No need to create directory here - it's handled by docker-compose volume mount
-
-# Install latest neovim from prebuilt x86_64 release (much faster than building from source)
-RUN cd /tmp && \
-  wget -q https://github.com/neovim/neovim/releases/download/v0.11.5/nvim-linux-x86_64.tar.gz && \
-  tar xzf nvim-linux-x86_64.tar.gz && \
-  cp -r nvim-linux-x86_64/bin/* /usr/local/bin/ && \
-  cp -r nvim-linux-x86_64/lib/* /usr/local/lib/ && \
-  cp -r nvim-linux-x86_64/share/* /usr/local/share/ && \
-  rm -rf /tmp/nvim-linux*
-
-# Install Groot2 for behavior tree visualization
-RUN cd /tmp && \
-  wget -q https://s3.us-west-1.amazonaws.com/download.behaviortree.dev/groot2_linux_installer/Groot2-v1.6.1-linux-installer.run && \
-  chmod +x Groot2-v1.6.1-linux-installer.run && \
-  ./Groot2-v1.6.1-linux-installer.run --accept-licenses --default-answer --confirm-command install && \
-  rm -f Groot2-v1.6.1-linux-installer.run && \
-  ln -s /root/Groot2/bin/groot2 /usr/local/bin/groot2
+  transformers \
+  'segment-anything>=1.0' \
+  einops \
+  timm
 
 # Create workspace
 WORKDIR /workspace
 
-# Clone OpenManipulator-X description (not available in Jazzy apt repos)
-RUN mkdir -p /workspace/src && cd /workspace/src && \
-  git clone -b jazzy https://github.com/ROBOTIS-GIT/open_manipulator.git && \
-  git clone -b ros2 https://github.com/ROBOTIS-GIT/open_manipulator_msgs.git && \
-  git clone -b ros2 https://github.com/ROBOTIS-GIT/robotis_manipulator.git
-
-
-# Copy project files (models/ excluded - should be volume mounted)
-COPY src/ ./src/
-COPY robot_description/ ./robot_description/
+# Note: src/ and robot_description/ are volume-mounted from host (see docker-compose.yml)
+# No need to copy or clone - everything is mounted at runtime
 
 # Create VNC directory, scripts, and configuration in a single layer
 RUN mkdir -p /root/.vnc /root/.config && \

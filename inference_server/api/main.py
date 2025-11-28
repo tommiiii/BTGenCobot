@@ -75,7 +75,6 @@ class GenerateBTRequest(BaseModel):
     command: str = Field(..., description="Natural language command", min_length=1)
     max_tokens: int = Field(1024, description="Maximum tokens to generate", gt=0, le=4096)
     temperature: float = Field(0.6, description="Sampling temperature", ge=0.0, le=2.0)
-    use_few_shot: bool = Field(False, description="Whether to include few-shot examples in prompt")
     prompt_format: str = Field("chat", description="Prompt format: 'chat' (Llama chat) or 'alpaca' (instruction format)")
     use_query_rewriting: bool = Field(False, description="Whether to use LLM query rewriting to expand command")
     custom_instruction: str | None = Field(None, description="Optional custom instruction to override default alpaca_instruction.txt")
@@ -86,7 +85,6 @@ class GenerateBTRequest(BaseModel):
                 "command": "Pick up the red cup and place it on the table",
                 "max_tokens": 1024,
                 "temperature": 0.6,
-                "use_few_shot": False,
                 "prompt_format": "alpaca",
                 "use_query_rewriting": False
             }
@@ -181,7 +179,7 @@ async def generate_bt(request: GenerateBTRequest):
     logger.info("=" * 80)
     logger.info(f"Received BT generation request")
     logger.info(f"Command: {request.command}")
-    logger.info(f"Max tokens: {request.max_tokens}, Temp: {request.temperature}, Few-shot: {request.use_few_shot}, Format: {request.prompt_format}, Query rewriting: {request.use_query_rewriting}")
+    logger.info(f"Max tokens: {request.max_tokens}, Temp: {request.temperature}, Format: {request.prompt_format}, Query rewriting: {request.use_query_rewriting}")
 
     try:
         start_time = time.time()
@@ -204,7 +202,6 @@ async def generate_bt(request: GenerateBTRequest):
             command=request.command,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
-            use_few_shot=request.use_few_shot,
             prompt_format=request.prompt_format,
             rewritten_input=rewritten_input,
             custom_instruction=request.custom_instruction

@@ -1,5 +1,4 @@
 """Prompt Templates for BehaviorTree Generation"""
-import json
 from pathlib import Path
 from typing import Optional
 
@@ -10,24 +9,17 @@ def _load_prompt_file(filename: str) -> str:
     file_path = _PROMPTS_DIR / filename
     return file_path.read_text().strip()
 
-def _load_few_shot_examples() -> list:
-    """Load few-shot examples from JSON"""
-    file_path = _PROMPTS_DIR / "few_shot_examples.json"
-    return json.loads(file_path.read_text())
-
 SYSTEM_PROMPT = _load_prompt_file("system_prompt.txt")
 ALPACA_INSTRUCTION = _load_prompt_file("alpaca_instruction.txt")
 AVAILABLE_ACTIONS = _load_prompt_file("available_actions.txt")
-FEW_SHOT_EXAMPLES = _load_few_shot_examples()
 
 
-def build_prompt(command: str, use_few_shot: bool = True, output_format: str = "xml", tokenizer=None) -> str:
+def build_prompt(command: str, output_format: str = "xml", tokenizer=None) -> str:
     """
     Build the complete prompt for BT generation using Llama chat format
 
     Args:
         command: Natural language command from user
-        use_few_shot: Whether to include few-shot examples
         output_format: "xml" for direct XML, "json" for JSON intermediate
         tokenizer: Tokenizer with chat template (if None, returns raw text)
 
@@ -37,17 +29,6 @@ def build_prompt(command: str, use_few_shot: bool = True, output_format: str = "
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT}
     ]
-
-    if use_few_shot:
-        for example in FEW_SHOT_EXAMPLES:
-            messages.append({
-                "role": "user",
-                "content": f"Command: {example['command']}"
-            })
-            messages.append({
-                "role": "assistant",
-                "content": example['xml']
-            })
 
     messages.append({
         "role": "user",
@@ -76,13 +57,12 @@ def build_prompt(command: str, use_few_shot: bool = True, output_format: str = "
     return prompt
 
 
-def build_alpaca_prompt(command: str, use_few_shot: bool = False, rewritten_input: Optional[str] = None, custom_instruction: Optional[str] = None) -> str:
+def build_alpaca_prompt(command: str, rewritten_input: Optional[str] = None, custom_instruction: Optional[str] = None) -> str:
     """
     Build Alpaca prompt matching the training data format
 
     Args:
         command: Natural language command from user (used if rewritten_input not provided)
-        use_few_shot: Whether to include few-shot examples
         rewritten_input: Rewritten input from query rewriter (used directly)
         custom_instruction: Optional custom instruction to override ALPACA_INSTRUCTION
 
@@ -92,13 +72,6 @@ def build_alpaca_prompt(command: str, use_few_shot: bool = False, rewritten_inpu
     # System instruction (use custom if provided, otherwise default)
     instruction = custom_instruction if custom_instruction is not None else ALPACA_INSTRUCTION
     prompt = f"### Instruction:\n{instruction}\n\n"
-
-    # Add few-shot examples if requested
-    if use_few_shot:
-        for example in FEW_SHOT_EXAMPLES:
-            # Examples now already contain "Actions:" format
-            prompt += f"### Input:\n{example['command']}\n\n"
-            prompt += f"### Response:\n{example['xml']}\n\n"
 
     # User input
     if rewritten_input:
@@ -146,4 +119,4 @@ if __name__ == "__main__":
     test_command = "Pick up the green bottle and place it in the recycling bin"
 
     print("=== XML Generation Prompt ===")
-    print(build_prompt(test_command, use_few_shot=True))
+    print(build_prompt(test_command))

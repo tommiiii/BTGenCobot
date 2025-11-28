@@ -70,7 +70,6 @@ def generate_launch_description():
         }.items()
     )
 
-
     # Launch Foxglove Bridge with client publish capability
     foxglove_bridge = Node(
         package='foxglove_bridge',

@@ -1,5 +1,6 @@
 #include "bt_nav2_plugins/detect_object.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <chrono>
 #include <cmath>
@@ -150,121 +151,104 @@ BT::NodeStatus DetectObject::onRunning()
     return BT::NodeStatus::FAILURE;
   }
 
-  // Get depth at detected point
-  float depth = 1.5;  // Default depth if no depth camera (1.5m is reasonable for navigation)
+  // Sample depth using segmentation mask for accurate object depth
+  float depth = 1.5;  // Default if no depth available
+
   if (latest_depth_) {
     try {
       cv_bridge::CvImagePtr depth_ptr = cv_bridge::toCvCopy(
         latest_depth_,
         sensor_msgs::image_encodings::TYPE_32FC1);
 
-      int x = static_cast<int>(response->center_x);
-      int y = static_cast<int>(response->center_y);
+      std::vector<float> depth_samples;
 
-      // Ensure coordinates are within bounds
-      if (x >= 0 && x < depth_ptr->image.cols && y >= 0 && y < depth_ptr->image.rows) {
-        depth = depth_ptr->image.at<float>(y, x);
+      // Check if we have a segmentation mask
+      if (!response->mask.empty() && response->mask_height > 0 && response->mask_width > 0) {
+        // Sample depth only from masked pixels (the actual object)
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "Using segmentation mask (%dx%d) for depth sampling",
+          response->mask_width, response->mask_height);
+
+        // Ensure mask dimensions match depth image
+        if (response->mask_height != depth_ptr->image.rows || 
+            response->mask_width != depth_ptr->image.cols) {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "Mask size (%dx%d) doesn't match depth image (%dx%d), falling back to bbox",
+            response->mask_width, response->mask_height,
+            depth_ptr->image.cols, depth_ptr->image.rows);
+        } else {
+          // Sample all masked pixels
+          int sample_stride = 2;  // Sample every 2nd pixel for efficiency
+          for (int y = 0; y < depth_ptr->image.rows; y += sample_stride) {
+            for (int x = 0; x < depth_ptr->image.cols; x += sample_stride) {
+              int mask_idx = y * response->mask_width + x;
+              if (mask_idx < static_cast<int>(response->mask.size()) && response->mask[mask_idx] > 0) {
+                float d = depth_ptr->image.at<float>(y, x);
+                if (!std::isnan(d) && d > 0.1 && d < 10.0) {
+                  depth_samples.push_back(d);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Fallback to bounding box if mask sampling failed
+      if (depth_samples.empty() && response->bbox.size() >= 4) {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "Mask sampling failed or unavailable, using bounding box center");
+
+        int cx = static_cast<int>(response->center_x);
+        int cy = static_cast<int>(response->center_y);
+        int radius = 5;  // Sample 5-pixel radius around center
+
+        for (int dy = -radius; dy <= radius; dy++) {
+          for (int dx = -radius; dx <= radius; dx++) {
+            int x = cx + dx;
+            int y = cy + dy;
+            if (x >= 0 && x < depth_ptr->image.cols && y >= 0 && y < depth_ptr->image.rows) {
+              float d = depth_ptr->image.at<float>(y, x);
+              if (!std::isnan(d) && d > 0.1 && d < 10.0) {
+                depth_samples.push_back(d);
+              }
+            }
+          }
+        }
+      }
+
+      // Use median of masked pixels (more robust than minimum for mask-based sampling)
+      if (!depth_samples.empty()) {
+        std::sort(depth_samples.begin(), depth_samples.end());
+        
+        // Use median for mask-based sampling (already filtered to object only)
+        depth = depth_samples[depth_samples.size() / 2];
 
         RCLCPP_INFO(
           node_->get_logger(),
-          "Raw depth at pixel (%d, %d): %.2fm", x, y, depth);
-
-        // Check for invalid depth
-        if (std::isnan(depth) || depth <= 0.0) {
-          RCLCPP_WARN(
-            node_->get_logger(),
-            "Invalid depth at detection point, using estimated depth of 1.5m");
-          depth = 1.5;
-        }
-        // Clamp depth to reasonable navigation range (0.5m to 5.0m)
-        else if (depth < 0.5) {
-          RCLCPP_WARN(
-            node_->get_logger(),
-            "Depth too close (%.2fm), clamping to 0.5m", depth);
-          depth = 0.5;
-        }
-        else if (depth > 5.0) {
-          RCLCPP_WARN(
-            node_->get_logger(),
-            "Depth too far (%.2fm), clamping to 5.0m", depth);
-          depth = 5.0;
-        }
+          "Sampled %zu depth points from mask, median: %.2fm (range: %.2f - %.2fm)",
+          depth_samples.size(), depth, depth_samples.front(), depth_samples.back());
+      } else {
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "No valid depth samples available, using default 1.5m");
       }
+
     } catch (const std::exception & e) {
       RCLCPP_WARN(
         node_->get_logger(),
-        "Failed to get depth: %s. Using estimated depth of 1.5m",
-        e.what());
-      depth = 1.5;
+        "Failed to sample depth: %s. Using default 1.5m", e.what());
     }
   } else {
     RCLCPP_WARN_ONCE(
       node_->get_logger(),
-      "No depth data available. Using estimated depth of 1.5m");
+      "No depth data available. Using default 1.5m");
   }
 
-  // Convert pixel coordinates to 3D pose
-  // Use the frame_id from the latest image, but validate it exists in TF
-  std::string camera_frame = latest_image_->header.frame_id;
-
-  // Try to transform a test point to verify the frame exists
-  geometry_msgs::msg::TransformStamped test_transform;
-  bool frame_exists = false;
-  try {
-    test_transform = tf_buffer_->lookupTransform(
-      "map",
-      camera_frame,
-      tf2::TimePointZero,
-      tf2::durationFromSec(0.1));
-    frame_exists = true;
-  } catch (const tf2::TransformException & ex) {
-    RCLCPP_WARN(
-      node_->get_logger(),
-      "Camera frame '%s' not found in TF tree: %s. Trying alternatives...",
-      camera_frame.c_str(),
-      ex.what());
-  }
-
-  // If frame doesn't exist, try common camera frame names
-  if (!frame_exists) {
-    std::vector<std::string> frame_candidates = {
-      "camera_rgb_optical_frame",
-      "base_footprint/camera_rgb_optical_frame",
-      "camera_link",
-      "base_footprint/camera_link",
-      "camera_rgb_frame",
-      "base_footprint/camera_rgb_frame"
-    };
-
-    for (const auto & candidate : frame_candidates) {
-      try {
-        test_transform = tf_buffer_->lookupTransform(
-          "map",
-          candidate,
-          tf2::TimePointZero,
-          tf2::durationFromSec(0.1));
-        camera_frame = candidate;
-        frame_exists = true;
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "Using camera frame: %s",
-          camera_frame.c_str());
-        break;
-      } catch (const tf2::TransformException & ex) {
-        // Try next candidate
-        continue;
-      }
-    }
-
-    if (!frame_exists) {
-      RCLCPP_ERROR(
-        node_->get_logger(),
-        "Could not find any valid camera frame in TF tree!");
-      setOutput("detected", false);
-      setOutput("confidence", 0.0);
-      return BT::NodeStatus::FAILURE;
-    }
-  }
+  // Use camera optical frame for pose estimation
+  std::string camera_frame = "camera_rgb_optical_frame";
 
   geometry_msgs::msg::PoseStamped target_pose = pixelToPose(
     response->center_x,
@@ -274,15 +258,13 @@ BT::NodeStatus DetectObject::onRunning()
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "Detected '%s' at pixel (%.1f, %.1f) with depth %.2fm -> pose (%.2f, %.2f, %.2f) in %s frame (confidence: %.2f)",
+    "Detected '%s' at pixel (%.1f, %.1f), depth %.2fm -> goal (%.2f, %.2f) in map (conf: %.2f)",
     response->phrase.c_str(),
     response->center_x,
     response->center_y,
     depth,
     target_pose.pose.position.x,
     target_pose.pose.position.y,
-    target_pose.pose.position.z,
-    target_pose.header.frame_id.c_str(),
     response->confidence);
 
   // Set output ports
@@ -336,77 +318,51 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
   float depth_value,
   const std::string & frame_id)
 {
-  geometry_msgs::msg::PoseStamped pose;
-
-  // Pinhole camera model: convert pixel to 3D point in camera frame
-  // In optical frame: X = right, Y = down, Z = forward (depth)
-  // X = (u - cx) * Z / fx
-  // Y = (v - cy) * Z / fy
-  // Z = depth
-
-  // Apply approach offset in camera frame (before transformation)
-  // Stop 30cm before the object by reducing depth
-  double approach_offset = 0.3;  // meters
-  double target_depth = depth_value;
-
-  if (target_depth > 0.5) {  // Only apply offset if object is reasonably far
-    target_depth = depth_value - approach_offset;
-  }
-
-  // Pinhole camera model: convert pixel to 3D point in camera frame
-  double x = (center_x - cx_) * target_depth / fx_;
-  double y = (center_y - cy_) * target_depth / fy_;
+  // Pinhole camera model: pixel to 3D point in optical frame
+  // Optical frame: +X=right, +Y=down, +Z=forward
+  double x = (center_x - cx_) * depth_value / fx_;
+  double y = (center_y - cy_) * depth_value / fy_;
+  double z = depth_value;
 
   // Create pose in camera optical frame
-  // ROS optical frame convention: +X right, +Y down, +Z forward
-  pose.header.frame_id = frame_id;
-  pose.header.stamp = node_->now();
-  pose.pose.position.x = x;       // Right
-  pose.pose.position.y = y;       // Down
-  pose.pose.position.z = target_depth;   // Forward (depth with offset applied)
-  pose.pose.orientation.w = 1.0;  // No rotation
+  geometry_msgs::msg::PoseStamped pose_camera;
+  pose_camera.header.frame_id = frame_id;
+  pose_camera.header.stamp = node_->now();
+  pose_camera.pose.position.x = x;
+  pose_camera.pose.position.y = y;
+  pose_camera.pose.position.z = z;
+  pose_camera.pose.orientation.w = 1.0;
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "Camera frame pose: (%.2f, %.2f, %.2f) in %s (original depth: %.2fm, target depth: %.2fm)",
-    pose.pose.position.x,
-    pose.pose.position.y,
-    pose.pose.position.z,
-    frame_id.c_str(),
-    depth_value,
-    target_depth);
+    "Object in camera frame: (%.2f, %.2f, %.2f) at depth %.2fm",
+    x, y, z, depth_value);
 
+  // Transform to map frame
   try {
-    // First, transform the ACTUAL object position (without approach offset) to get the true object location
-    geometry_msgs::msg::PoseStamped object_pose_camera;
-    object_pose_camera.header.frame_id = frame_id;
-    object_pose_camera.header.stamp = node_->now();
-    object_pose_camera.pose.position.x = (center_x - cx_) * depth_value / fx_;
-    object_pose_camera.pose.position.y = (center_y - cy_) * depth_value / fy_;
-    object_pose_camera.pose.position.z = depth_value;  // Original depth, not reduced
-    object_pose_camera.pose.orientation.w = 1.0;
-
-    geometry_msgs::msg::PoseStamped object_pose_map = tf_buffer_->transform(
-      object_pose_camera,
-      "map",
-      tf2::durationFromSec(1.0));
-
-    // Now transform the approach goal (with offset)
     geometry_msgs::msg::PoseStamped pose_map = tf_buffer_->transform(
-      pose,
+      pose_camera,
       "map",
       tf2::durationFromSec(1.0));
 
-    // For 2D navigation, set z=0 (ground level)
+    // Project to ground plane (z=0 for 2D navigation)
     pose_map.pose.position.z = 0.0;
-    object_pose_map.pose.position.z = 0.0;
 
-    // Calculate orientation: robot at goal position should face toward the object
-    double dx = object_pose_map.pose.position.x - pose_map.pose.position.x;
-    double dy = object_pose_map.pose.position.y - pose_map.pose.position.y;
-    double yaw = std::atan2(dy, dx);
+    // Calculate orientation: point toward object from approach position
+    // Apply 0.5m approach offset along the direction to the object
+    double obj_x = pose_map.pose.position.x;
+    double obj_y = pose_map.pose.position.y;
+    double distance = std::sqrt(obj_x * obj_x + obj_y * obj_y);
+    
+    if (distance > 0.5) {
+      // Move goal 0.5m back from object
+      double scale = (distance - 0.5) / distance;
+      pose_map.pose.position.x = obj_x * scale;
+      pose_map.pose.position.y = obj_y * scale;
+    }
 
-    // Convert yaw to quaternion
+    // Face toward object
+    double yaw = std::atan2(obj_y, obj_x);
     tf2::Quaternion q;
     q.setRPY(0, 0, yaw);
     pose_map.pose.orientation.x = q.x();
@@ -416,23 +372,16 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
 
     RCLCPP_INFO(
       node_->get_logger(),
-      "Navigation goal: (%.2f, %.2f, %.2f) in %s with yaw %.2f rad toward object at (%.2f, %.2f)",
-      pose_map.pose.position.x,
-      pose_map.pose.position.y,
-      pose_map.pose.position.z,
-      pose_map.header.frame_id.c_str(),
-      yaw,
-      object_pose_map.pose.position.x,
-      object_pose_map.pose.position.y);
+      "Navigation goal: (%.2f, %.2f) in map, facing object at (%.2f, %.2f)",
+      pose_map.pose.position.x, pose_map.pose.position.y, obj_x, obj_y);
 
     return pose_map;
 
   } catch (const tf2::TransformException & ex) {
-    RCLCPP_WARN(
+    RCLCPP_ERROR(
       node_->get_logger(),
-      "Could not transform to map frame: %s. Returning camera frame pose.",
-      ex.what());
-    return pose;
+      "TF transform failed: %s", ex.what());
+    return pose_camera;
   }
 }
 

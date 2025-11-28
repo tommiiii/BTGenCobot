@@ -74,7 +74,6 @@ def main():
     test_cases = [
         {
             "command": "rotate left",
-            "use_few_shot": True,
             "prompt_format": "alpaca",
             "use_query_rewriting": True,
             "temperature": 0.3,
@@ -82,7 +81,6 @@ def main():
         },
         {
             "command": "move forward 2 meters",
-            "use_few_shot": True,
             "prompt_format": "alpaca",
             "use_query_rewriting": True,
             "temperature": 0.3,
@@ -90,7 +88,6 @@ def main():
         },
         {
             "command": "pick up the red cup",
-            "use_few_shot": True,
             "prompt_format": "alpaca",
             "use_query_rewriting": True,
             "temperature": 0.3,

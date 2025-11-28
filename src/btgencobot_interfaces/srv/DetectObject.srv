@@ -1,4 +1,4 @@
-# Service for object detection using Grounding DINO
+# Service for object detection and segmentation using Grounded SAM (Grounding DINO + EdgeSAM)
 # Request
 sensor_msgs/Image image                # RGB image
 string object_description              # Text description of object to find (e.g., "red cup", "table")
@@ -12,3 +12,6 @@ float32 center_y                       # Bounding box center Y in pixels (-1 if 
 float32[] bbox                         # Bounding box [x1, y1, x2, y2] in pixels (empty if not detected)
 string phrase                          # Matched text phrase from model
 string error_message                   # Error message if detection failed
+uint8[] mask                           # Binary segmentation mask (flattened, row-major order)
+int32 mask_height                      # Height of segmentation mask
+int32 mask_width                       # Width of segmentation mask

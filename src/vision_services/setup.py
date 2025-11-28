@@ -19,11 +19,11 @@ setup(
     zip_safe=True,
     maintainer='BTGenCobot Team',
     maintainer_email='noreply@example.com',
-    description='Vision service nodes for BTGenCobot (Grounding DINO object detection)',
+    description='Vision service nodes for BTGenCobot (Florence-2 + SAM)',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'grounding_dino_service = vision_services.grounding_dino_service:main',
+            'florence2_sam_service = vision_services.florence2_sam_service:main',
         ],
     },
 )

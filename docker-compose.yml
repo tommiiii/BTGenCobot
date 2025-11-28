@@ -24,10 +24,6 @@ services:
       - ./install:/workspace/install:delegated
       - ./build:/workspace/build:delegated
       - ./log:/workspace/log:delegated
-      # Neovim config and data
-      - ~/.config/nvim:/root/.config/nvim:ro # Read-only to prevent accidental changes
-      - nvim-data:/root/.local/share/nvim
-      - nvim-state:/root/.local/state/nvim
     environment:
       - ROS_DOMAIN_ID=42
       - DISPLAY=:1
@@ -36,8 +32,3 @@ services:
     stdin_open: true
     tty: true
     command: /bin/bash
-
-# Named volumes for nvim data persistence
-volumes:
-  nvim-data:
-  nvim-state:
