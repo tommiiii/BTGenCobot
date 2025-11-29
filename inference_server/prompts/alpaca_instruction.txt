@@ -26,10 +26,14 @@ Parameter formats (use EXACT attribute names):
   * backup_dist is ALWAYS POSITIVE (robot moves backward)
   * Example: <BackUp backup_dist="1.0" backup_speed="0.1" time_allowance="30"/> for backward 1 meter
 - Wait: wait_duration="value"
-- DetectObject: object_description="text" target_pose="{goal}"
-  * CRITICAL: DetectObject outputs to target_pose. Use target_pose="{goal}" when followed by ComputePathToPose
-- PickObject: target_pose="{goal}"
-- PlaceObject: target_pose="{goal}"
+- DetectObject: object_description="text" target_pose="{goal}" object_pose="{object_pose}"
+  * MANDATORY: Always use EXACTLY target_pose="{goal}" object_pose="{object_pose}"
+  * DetectObject writes approach position to {goal} and object position to {object_pose}
+- PickObject: target_pose="{object_pose}"
+  * MANDATORY: Always use EXACTLY target_pose="{object_pose}"
+  * PickObject picks from the actual object location
+- PlaceObject: target_pose="{object_pose}"
+  * MANDATORY: Always use EXACTLY target_pose="{object_pose}"
 
 CRITICAL FOR SPIN: When the input says spin_dist="-1.57" or mentions RIGHT/CLOCKWISE, you MUST output the minus sign in the XML.
 

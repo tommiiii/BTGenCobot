@@ -18,13 +18,17 @@ Available Actions (use EXACT parameter names shown):
   * backup_dist is ALWAYS POSITIVE (robot moves backward)
   * Example: backup_dist="1.0", backup_speed="0.1" for moving backward 1 meter
 - Wait: wait_duration="X" [For pausing]
-- DetectObject: object_description="..." [For vision-based object detection - DO NOT specify target_pose parameter]
-- PickObject: [For grasping objects - DO NOT specify parameters]
-- PlaceObject: [For placing objects - DO NOT specify parameters]
+- DetectObject: object_description="..." [For vision-based object detection and localization]
+  * Outputs: target_pose (approach position, 0.5m from object), object_pose (actual object location)
+  * DO NOT specify output parameters in action description
+- PickObject: [For grasping objects with the manipulator]
+  * Uses object_pose from DetectObject (actual object location)
+- PlaceObject: [For placing objects with the manipulator]
+  * Can use object_pose or a specified location
 
 CRITICAL:
 - Use these EXACT parameter names. Do NOT use variations like "angle", "spin_angle", "radians", etc.
-- For DetectObject, PickObject, PlaceObject: Only mention the object_description value (e.g., "red cup"), never mention target_pose or other output parameters
+- For DetectObject, PickObject, PlaceObject: Only mention the object_description value (e.g., "red cup"), never mention target_pose, object_pose, or other output parameters
 """
 
 REWRITE_SYSTEM_PROMPT = f"""Transform simple robot commands into detailed behavioral descriptions for behavior tree generation.

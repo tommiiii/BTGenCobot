@@ -27,9 +27,9 @@ def generate_restricted_grammar(allowed_actions: List[str]) -> str:
         "DriveOnHeading": 'drive_on_heading: "<DriveOnHeading" " " dist_to_travel_attr " " speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
         "BackUp": 'backup: "<BackUp" " " backup_dist_attr " " backup_speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
         "Wait": 'wait: "<Wait" " " wait_duration_attr (" " name_attr)? " "? "/>"',
-        "DetectObject": 'detect_obj: "<DetectObject" " " object_description_attr " " target_pose_attr (" " name_attr)? " "? "/>"',
-        "PickObject": 'pick_obj: "<PickObject" " " target_pose_attr (" " name_attr)? " "? "/>"',
-        "PlaceObject": 'place_obj: "<PlaceObject" " " target_pose_attr (" " name_attr)? " "? "/>"'
+        "DetectObject": 'detect_obj: "<DetectObject" " " object_description_attr " " detect_target_pose_attr " " detect_object_pose_attr (" " name_attr)? " "? "/>"',
+        "PickObject": 'pick_obj: "<PickObject" " " pick_target_pose_attr (" " name_attr)? " "? "/>"',
+        "PlaceObject": 'place_obj: "<PlaceObject" " " place_target_pose_attr (" " name_attr)? " "? "/>"'
     }
     
     # Map action names to their rule names for the action_node definition
@@ -109,8 +109,8 @@ behavior_tree: "<BehaviorTree" ((" " | "\t") attribute)* " "? ">" WS? bt_content
     
     # Add attribute definitions (all actions might need these) - using raw string
     grammar += r"""// Specific parameter definitions
-goal_attr: "goal" " "? "=" " "? "\"" att_value_content "\""
-path_attr: "path" " "? "=" " "? "\"" att_value_content "\""
+goal_attr: "goal" " "? "=" " "? "\"" goal_var "\""
+path_attr: "path" " "? "=" " "? "\"" path_var "\""
 planner_id_attr: "planner_id" " "? "=" " "? "\"" att_value_content "\""
 controller_id_attr: "controller_id" " "? "=" " "? "\"" att_value_content "\""
 spin_dist_attr: "spin_dist" " "? "=" " "? "\"" "-"? numeric_value "\""
@@ -121,8 +121,15 @@ backup_speed_attr: "backup_speed" " "? "=" " "? "\"" numeric_value "\""
 time_allowance_attr: "time_allowance" " "? "=" " "? "\"" numeric_value "\""
 wait_duration_attr: "wait_duration" " "? "=" " "? "\"" numeric_value "\""
 object_description_attr: "object_description" " "? "=" " "? "\"" att_value_content "\""
-target_pose_attr: "target_pose" " "? "=" " "? "\"" att_value_content "\""
+detect_target_pose_attr: "target_pose" " "? "=" " "? "\"{goal}\""
+detect_object_pose_attr: "object_pose" " "? "=" " "? "\"{object_pose}\""
+pick_target_pose_attr: "target_pose" " "? "=" " "? "\"{object_pose}\""
+place_target_pose_attr: "target_pose" " "? "=" " "? "\"{object_pose}\""
 name_attr: "name" " "? "=" " "? "\"" att_value_content "\""
+
+// Variable name constraints - force specific variable names
+goal_var: "{goal}"
+path_var: "{path}"
 
 numeric_value: /[0-9]+\.?[0-9]*/
 att_value_content: /[^<&";]*/

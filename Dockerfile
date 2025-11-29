@@ -34,6 +34,8 @@ RUN apt-get update && apt-get install -y \
   ros-jazzy-turtlebot3-gazebo \
   ros-jazzy-turtlebot3-msgs \
   ros-jazzy-teleop-twist-keyboard \
+  ros-jazzy-moveit \
+  ros-jazzy-moveit-ros-planning-interface \
   tigervnc-standalone-server \
   tigervnc-xorg-extension \
   novnc \
@@ -49,7 +51,7 @@ RUN apt-get update && apt-get install -y \
   ros-jazzy-iceoryx-binding-c && \
   rm -rf /var/lib/apt/lists/*
 
-# Install Python packages for vision (Florence-2 + SAM)
+# Install Python packages for vision (Florence-2)
 # Using PyTorch for best text-prompted detection support
 RUN pip3 install --break-system-packages \
   torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
@@ -58,7 +60,6 @@ RUN pip3 install --break-system-packages \
   pillow \
   opencv-python>=4.8.0 \
   transformers \
-  'segment-anything>=1.0' \
   einops \
   timm
 
