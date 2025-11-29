@@ -8,7 +8,7 @@ Uses AMCL for localization instead of SLAM
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -94,47 +94,59 @@ def generate_launch_description():
         }]
     )
 
-    # Launch AMCL for localization
-    amcl_node = Node(
-        package='nav2_amcl',
-        executable='amcl',
-        name='amcl',
-        output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'global_frame_id': 'map',
-            'odom_frame_id': 'odom',
-            'base_frame_id': 'base_footprint',
-            'scan_topic': 'scan',
-            'robot_model_type': 'nav2_amcl::DifferentialMotionModel',
-            'set_initial_pose': True,
-            'initial_pose.x': 0.0,
-            'initial_pose.y': 0.0,
-            'initial_pose.z': 0.0,
-            'initial_pose.yaw': 0.0,
-            # AMCL parameters
-            'min_particles': 500,
-            'max_particles': 2000,
-            'update_min_d': 0.1,  # Update after 10cm movement
-            'update_min_a': 0.1,  # Update after ~6° rotation
-            'resample_interval': 1,
-            'transform_tolerance': 0.5,
-            'recovery_alpha_slow': 0.0,
-            'recovery_alpha_fast': 0.0,
-        }]
+    # Launch AMCL for localization with delay to allow TF to stabilize
+    # Wrapped in TimerAction to ensure Gazebo TF is publishing before AMCL starts
+    amcl_node = TimerAction(
+        period=8.0,  # Wait for Gazebo and TF bridges to stabilize
+        actions=[
+            Node(
+                package='nav2_amcl',
+                executable='amcl',
+                name='amcl',
+                output='screen',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'global_frame_id': 'map',
+                    'odom_frame_id': 'odom',
+                    'base_frame_id': 'base_footprint',
+                    'scan_topic': 'scan',
+                    'robot_model_type': 'nav2_amcl::DifferentialMotionModel',
+                    'set_initial_pose': True,
+                    'initial_pose.x': 0.0,
+                    'initial_pose.y': 0.0,
+                    'initial_pose.z': 0.0,
+                    'initial_pose.yaw': 0.0,
+                    # AMCL parameters
+                    'min_particles': 500,
+                    'max_particles': 2000,
+                    'update_min_d': 0.1,  # Update after 10cm movement
+                    'update_min_a': 0.1,  # Update after ~6° rotation
+                    'resample_interval': 1,
+                    'transform_tolerance': 1.0,  # Increased for Gazebo timing jitter
+                    'recovery_alpha_slow': 0.0,
+                    'recovery_alpha_fast': 0.0,
+                    'tf_broadcast': True,
+                }]
+            )
+        ]
     )
 
-    # Lifecycle manager for AMCL
-    amcl_lifecycle_node = Node(
-        package='nav2_lifecycle_manager',
-        executable='lifecycle_manager',
-        name='amcl_lifecycle_manager',
-        output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'autostart': True,
-            'node_names': ['amcl']
-        }]
+    # Lifecycle manager for AMCL (delayed to match AMCL startup)
+    amcl_lifecycle_node = TimerAction(
+        period=9.0,  # Start after AMCL has had time to initialize
+        actions=[
+            Node(
+                package='nav2_lifecycle_manager',
+                executable='lifecycle_manager',
+                name='amcl_lifecycle_manager',
+                output='screen',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'autostart': True,
+                    'node_names': ['amcl']
+                }]
+            )
+        ]
     )
 
     # Launch Nav2
@@ -177,6 +189,17 @@ def generate_launch_description():
             'sam_model_type': 'vit_b',
             'device': 'auto',
             'publish_debug_images': True,
+        }],
+        output='screen'
+    )
+
+    # Launch Manipulator Control Service (pick/place using ikpy)
+    manipulator_service = Node(
+        package='manipulator_control',
+        executable='manipulator_service',
+        name='manipulator_service',
+        parameters=[{
+            'use_sim_time': use_sim_time,
         }],
         output='screen'
     )
@@ -230,6 +253,9 @@ def generate_launch_description():
 
     # Add Grounded-SAM Service (object detection)
     ld.add_action(florence2_sam_service)
+
+    # Add Manipulator Control Service (pick/place)
+    ld.add_action(manipulator_service)
 
     # Add Foxglove Bridge
     ld.add_action(foxglove_bridge)

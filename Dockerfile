@@ -34,8 +34,6 @@ RUN apt-get update && apt-get install -y \
   ros-jazzy-turtlebot3-gazebo \
   ros-jazzy-turtlebot3-msgs \
   ros-jazzy-teleop-twist-keyboard \
-  ros-jazzy-moveit \
-  ros-jazzy-moveit-ros-planning-interface \
   tigervnc-standalone-server \
   tigervnc-xorg-extension \
   novnc \
@@ -61,7 +59,10 @@ RUN pip3 install --break-system-packages \
   opencv-python>=4.8.0 \
   transformers \
   einops \
-  timm
+  timm \
+  scipy \
+  sympy \
+  ikpy>=3.3
 
 # Create workspace
 WORKDIR /workspace

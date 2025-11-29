@@ -123,6 +123,18 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Launch Manipulator Control Service
+    # Uses ikpy for inverse kinematics and ros2_control for trajectory execution
+    manipulator_service = Node(
+        package='manipulator_control',
+        executable='manipulator_service',
+        name='manipulator_service',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+        }],
+        output='screen',
+    )
+
 
     # Launch Foxglove Bridge with client publish capability
     foxglove_bridge = Node(
@@ -165,6 +177,9 @@ def generate_launch_description():
 
     # Add Grounded-SAM Service (object detection)
     ld.add_action(florence2_sam_service)
+
+    # Add Manipulator Control Service (pick/place operations)
+    ld.add_action(manipulator_service)
 
     # Add Foxglove Bridge
     ld.add_action(foxglove_bridge)

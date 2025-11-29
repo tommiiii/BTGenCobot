@@ -3,10 +3,12 @@
 
 #include <string>
 #include <memory>
+#include <future>
 
 #include "behaviortree_cpp/action_node.h"
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "btgencobot_interfaces/srv/manipulator_action.hpp"
 
 namespace bt_nav2_plugins
 {
@@ -17,12 +19,9 @@ namespace bt_nav2_plugins
  * Input Ports:
  *   target_pose - Pose where object should be placed
  *
- * This is a placeholder implementation that simulates place behavior.
- * In a full implementation, this would:
- *   1. Move to pre-place pose above target
- *   2. Lower arm to place pose
- *   3. Open gripper
- *   4. Retract arm
+ * This node calls the /manipulator_action service to execute a place operation.
+ * The service uses ikpy for inverse kinematics and controls the arm via
+ * ros2_control trajectory controllers.
  */
 class PlaceObject : public BT::StatefulActionNode
 {
@@ -47,8 +46,11 @@ private:
 
   rclcpp::Node::SharedPtr node_;
   geometry_msgs::msg::PoseStamped target_pose_;
-  rclcpp::Time start_time_;
-  double simulated_duration_;  // seconds
+
+  // Service client for manipulator action
+  rclcpp::Client<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr manipulator_client_;
+  std::shared_future<btgencobot_interfaces::srv::ManipulatorAction::Response::SharedPtr> future_result_;
+  bool service_call_sent_;
 };
 
 }  // namespace bt_nav2_plugins

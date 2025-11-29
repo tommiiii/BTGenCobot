@@ -1,0 +1,7 @@
+# Request
+string action_type          # "pick" or "place"
+geometry_msgs/PoseStamped target_pose  # Where to pick/place
+---
+# Response
+bool success
+string error_message

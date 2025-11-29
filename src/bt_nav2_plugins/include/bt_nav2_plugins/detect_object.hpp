@@ -73,7 +73,8 @@ private:
     const std::string & frame_id);
 
   // Node and TF
-  rclcpp::Node::SharedPtr node_;
+  rclcpp::Node::SharedPtr node_;         // Shared Nav2 node for service calls
+  rclcpp::Node::SharedPtr sub_node_;     // Our own node for subscriptions
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
@@ -99,8 +100,9 @@ private:
   // Detection state
   std::string object_description_;
   bool service_call_sent_;
+  bool response_received_;
   double box_threshold_;
-  rclcpp::Client<btgencobot_interfaces::srv::DetectObject>::SharedFuture future_result_;
+  btgencobot_interfaces::srv::DetectObject::Response::SharedPtr detection_response_;
 };
 
 }  // namespace bt_nav2_plugins

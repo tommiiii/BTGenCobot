@@ -1,22 +1,16 @@
-<library path="detect_object_bt_node">
+<library path="bt_nav2_plugins">
   <class name="DetectObject" type="bt_nav2_plugins::DetectObject" base_class_type="BT::ActionNodeBase">
     <description>
       Detect objects using vision (color-based or VLM).
       Outputs target_pose in map frame.
     </description>
   </class>
-</library>
-
-<library path="pick_object_bt_node">
   <class name="PickObject" type="bt_nav2_plugins::PickObject" base_class_type="BT::ActionNodeBase">
     <description>
       Pick up an object at the specified pose using the manipulator.
       Requires target_pose input parameter.
     </description>
   </class>
-</library>
-
-<library path="place_object_bt_node">
   <class name="PlaceObject" type="bt_nav2_plugins::PlaceObject" base_class_type="BT::ActionNodeBase">
     <description>
       Place an object at the specified pose using the manipulator.

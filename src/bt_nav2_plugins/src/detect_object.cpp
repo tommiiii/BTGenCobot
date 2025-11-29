@@ -19,34 +19,44 @@ DetectObject::DetectObject(
 : BT::StatefulActionNode(name, config),
   has_camera_info_(false),
   service_call_sent_(false),
+  response_received_(false),
   box_threshold_(0.35)
 {
-  // Create ROS 2 node
-  node_ = std::make_shared<rclcpp::Node>("detect_object_bt_node");
+  // Get ROS node from blackboard (shared with Nav2) for logging
+  if (!config.blackboard->get("node", node_) || !node_) {
+    throw BT::RuntimeError("DetectObject: 'node' not found in blackboard");
+  }
 
-  // Initialize TF2
+  // Create a separate node for subscriptions and service calls
+  // We spin this ourselves to ensure callbacks are processed
+  sub_node_ = std::make_shared<rclcpp::Node>("detect_object_sub_node");
+  
+  // Initialize TF2 using the shared node (uses Nav2's clock)
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   RCLCPP_INFO(node_->get_logger(), "DetectObject BT node initialized");
 
-  // Create service client for object detection
-  detect_client_ = node_->create_client<btgencobot_interfaces::srv::DetectObject>("/detect_object");
+  // Create service client on our own node so we can spin it ourselves
+  detect_client_ = sub_node_->create_client<btgencobot_interfaces::srv::DetectObject>("/detect_object");
 
-  // Subscribe to camera topics
-  image_sub_ = node_->create_subscription<sensor_msgs::msg::Image>(
+  // Use sensor data QoS for camera topics (best effort, volatile)
+  auto sensor_qos = rclcpp::SensorDataQoS();
+
+  // Subscribe to camera topics on our own node
+  image_sub_ = sub_node_->create_subscription<sensor_msgs::msg::Image>(
     "/camera",
-    10,
+    sensor_qos,
     std::bind(&DetectObject::imageCallback, this, std::placeholders::_1));
 
-  depth_sub_ = node_->create_subscription<sensor_msgs::msg::Image>(
+  depth_sub_ = sub_node_->create_subscription<sensor_msgs::msg::Image>(
     "/camera/depth",
-    10,
+    sensor_qos,
     std::bind(&DetectObject::depthCallback, this, std::placeholders::_1));
 
-  camera_info_sub_ = node_->create_subscription<sensor_msgs::msg::CameraInfo>(
+  camera_info_sub_ = sub_node_->create_subscription<sensor_msgs::msg::CameraInfo>(
     "/camera/camera_info",
-    10,
+    sensor_qos,
     std::bind(&DetectObject::cameraInfoCallback, this, std::placeholders::_1));
 
   RCLCPP_INFO(node_->get_logger(), "Subscribed to /camera, /camera/depth, /camera/camera_info");
@@ -71,14 +81,28 @@ BT::NodeStatus DetectObject::onStart()
     object_description_.c_str(),
     box_threshold_);
 
+  // Reset state for fresh detection
   service_call_sent_ = false;
+  response_received_ = false;
+  detection_response_.reset();
+  latest_image_.reset();
+  latest_depth_.reset();
+  has_camera_info_ = false;
+  
+  // Log subscription status
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Image subscription active: %s, count: %zu",
+    image_sub_ ? "yes" : "no",
+    image_sub_ ? image_sub_->get_publisher_count() : 0);
+
   return BT::NodeStatus::RUNNING;
 }
 
 BT::NodeStatus DetectObject::onRunning()
 {
-  // Spin node to process callbacks
-  rclcpp::spin_some(node_);
+  // Spin our subscription node to process camera callbacks
+  rclcpp::spin_some(sub_node_);
 
   // Check if we have image data
   if (!latest_image_) {
@@ -123,20 +147,44 @@ BT::NodeStatus DetectObject::onRunning()
 
     RCLCPP_INFO(node_->get_logger(), "Sending detection request to service...");
 
-    // Send async request
-    future_result_ = detect_client_->async_send_request(request).future.share();
+    // Send async request with callback
+    detect_client_->async_send_request(
+      request,
+      [this](rclcpp::Client<btgencobot_interfaces::srv::DetectObject>::SharedFuture future) {
+        try {
+          detection_response_ = future.get();
+          response_received_ = true;
+          RCLCPP_INFO(node_->get_logger(), "Detection response received via callback");
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(node_->get_logger(), "Service call failed: %s", e.what());
+          response_received_ = true;  // Mark as received so we can handle the error
+        }
+      });
     service_call_sent_ = true;
 
     return BT::NodeStatus::RUNNING;
   }
 
   // Check if service response is ready
-  if (future_result_.wait_for(0s) != std::future_status::ready) {
+  if (!response_received_) {
+    RCLCPP_INFO_THROTTLE(
+      node_->get_logger(),
+      *node_->get_clock(),
+      2000,
+      "Waiting for detection service response...");
     return BT::NodeStatus::RUNNING;
   }
 
   // Get service response
-  auto response = future_result_.get();
+  auto response = detection_response_;
+  
+  // Check if we got a valid response
+  if (!response) {
+    RCLCPP_ERROR(node_->get_logger(), "Detection service returned null response");
+    setOutput("detected", false);
+    setOutput("confidence", 0.0);
+    return BT::NodeStatus::FAILURE;
+  }
 
   // Check if detection was successful
   if (!response->detected) {
@@ -257,7 +305,7 @@ BT::NodeStatus DetectObject::onRunning()
     camera_frame);
 
   // Compute actual object pose (before approach offset was applied)
-  // The pixelToPose function modifies the position to be 0.5m back from the object
+  // The pixelToPose function modifies the position to be 0.25m back from the object
   // We need to recompute the actual object location for manipulation
   geometry_msgs::msg::PoseStamped object_pose = target_pose;
   
@@ -265,10 +313,10 @@ BT::NodeStatus DetectObject::onRunning()
   double approach_x = target_pose.pose.position.x;
   double approach_y = target_pose.pose.position.y;
   
-  // Calculate the actual object position (0.5m forward from approach pose)
+  // Calculate the actual object position (0.25m forward from approach pose)
   double yaw = std::atan2(approach_y, approach_x);
-  object_pose.pose.position.x = approach_x + 0.5 * std::cos(yaw);
-  object_pose.pose.position.y = approach_y + 0.5 * std::sin(yaw);
+  object_pose.pose.position.x = approach_x + 0.25 * std::cos(yaw);
+  object_pose.pose.position.y = approach_y + 0.25 * std::sin(yaw);
   object_pose.pose.position.z = 0.0;  // Ground plane
   
   // Object orientation faces same direction as approach pose
@@ -300,6 +348,8 @@ void DetectObject::onHalted()
 {
   RCLCPP_INFO(node_->get_logger(), "DetectObject node halted");
   service_call_sent_ = false;
+  response_received_ = false;
+  detection_response_.reset();
 }
 
 void DetectObject::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
@@ -370,14 +420,14 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     pose_map.pose.position.z = 0.0;
 
     // Calculate orientation: point toward object from approach position
-    // Apply 0.5m approach offset along the direction to the object
+    // Apply 0.25m approach offset along the direction to the object
     double obj_x = pose_map.pose.position.x;
     double obj_y = pose_map.pose.position.y;
     double distance = std::sqrt(obj_x * obj_x + obj_y * obj_y);
     
-    if (distance > 0.5) {
-      // Move goal 0.5m back from object
-      double scale = (distance - 0.5) / distance;
+    if (distance > 0.25) {
+      // Move goal 0.25m back from object (arm reach ~0.38m)
+      double scale = (distance - 0.25) / distance;
       pose_map.pose.position.x = obj_x * scale;
       pose_map.pose.position.y = obj_y * scale;
     }

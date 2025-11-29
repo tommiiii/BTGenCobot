@@ -17,9 +17,10 @@ find_package(sensor_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GenerateAndExecuteBT.action"
   "srv/DetectObject.srv"
+  "srv/ManipulatorAction.srv"
   DEPENDENCIES
-    action_msgs
-    std_msgs
+  action_msgs
+  std_msgs
     geometry_msgs
     sensor_msgs
 )
