@@ -256,19 +256,40 @@ BT::NodeStatus DetectObject::onRunning()
     depth,
     camera_frame);
 
+  // Compute actual object pose (before approach offset was applied)
+  // The pixelToPose function modifies the position to be 0.5m back from the object
+  // We need to recompute the actual object location for manipulation
+  geometry_msgs::msg::PoseStamped object_pose = target_pose;
+  
+  // Extract the approach pose components
+  double approach_x = target_pose.pose.position.x;
+  double approach_y = target_pose.pose.position.y;
+  
+  // Calculate the actual object position (0.5m forward from approach pose)
+  double yaw = std::atan2(approach_y, approach_x);
+  object_pose.pose.position.x = approach_x + 0.5 * std::cos(yaw);
+  object_pose.pose.position.y = approach_y + 0.5 * std::sin(yaw);
+  object_pose.pose.position.z = 0.0;  // Ground plane
+  
+  // Object orientation faces same direction as approach pose
+  object_pose.pose.orientation = target_pose.pose.orientation;
+
   RCLCPP_INFO(
     node_->get_logger(),
-    "Detected '%s' at pixel (%.1f, %.1f), depth %.2fm -> goal (%.2f, %.2f) in map (conf: %.2f)",
+    "Detected '%s' at pixel (%.1f, %.1f), depth %.2fm -> approach (%.2f, %.2f), object (%.2f, %.2f) in map (conf: %.2f)",
     response->phrase.c_str(),
     response->center_x,
     response->center_y,
     depth,
     target_pose.pose.position.x,
     target_pose.pose.position.y,
+    object_pose.pose.position.x,
+    object_pose.pose.position.y,
     response->confidence);
 
   // Set output ports
   setOutput("target_pose", target_pose);
+  setOutput("object_pose", object_pose);
   setOutput("detected", true);
   setOutput("confidence", static_cast<double>(response->confidence));
 

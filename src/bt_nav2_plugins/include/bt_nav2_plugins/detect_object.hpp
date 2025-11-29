@@ -29,7 +29,8 @@ namespace bt_nav2_plugins
  *   box_threshold - Confidence threshold for detection (default: 0.35)
  *
  * Output Ports:
- *   target_pose - Detected object pose in map frame
+ *   target_pose - Navigation approach pose (0.5m from object, facing it)
+ *   object_pose - Actual object pose for manipulation
  *   detected - Boolean indicating if object was found
  *   confidence - Detection confidence score (0-1)
  */
@@ -47,7 +48,8 @@ public:
     return {
       BT::InputPort<std::string>("object_description", "Description of object to detect"),
       BT::InputPort<double>("box_threshold", 0.35, "Detection confidence threshold (0-1)"),
-      BT::OutputPort<geometry_msgs::msg::PoseStamped>("target_pose", "Detected object pose"),
+      BT::OutputPort<geometry_msgs::msg::PoseStamped>("target_pose", "Approach pose for navigation"),
+      BT::OutputPort<geometry_msgs::msg::PoseStamped>("object_pose", "Actual object pose for manipulation"),
       BT::OutputPort<bool>("detected", "Whether object was detected"),
       BT::OutputPort<double>("confidence", "Detection confidence score")
     };
