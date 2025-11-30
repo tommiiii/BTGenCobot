@@ -19,11 +19,11 @@ setup(
     zip_safe=True,
     maintainer='BTGenCobot Team',
     maintainer_email='noreply@example.com',
-    description='Vision service nodes for BTGenCobot (Florence-2 + SAM)',
+    description='Vision service nodes for BTGenCobot (Florence-2 object detection)',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'florence2_sam_service = vision_services.florence2_sam_service:main',
+            'florence2_service = vision_services.florence2_service:main',
         ],
     },
 )

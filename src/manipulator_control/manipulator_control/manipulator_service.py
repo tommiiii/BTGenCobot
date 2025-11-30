@@ -229,18 +229,24 @@ class ManipulatorService(Node):
         """Handle ManipulatorAction service request."""
         action_type = request.action_type.lower()
         target_pose = request.target_pose
+        
+        # Get object dimensions (with defaults)
+        object_height = request.object_height if request.object_height > 0 else 0.1
+        object_width = request.object_width if request.object_width > 0 else 0.05
+        object_depth = request.object_depth if request.object_depth > 0 else object_width
 
         self.get_logger().info(
             f'Received {action_type} request at '
             f'({target_pose.pose.position.x:.3f}, '
             f'{target_pose.pose.position.y:.3f}, '
             f'{target_pose.pose.position.z:.3f}) '
-            f'in frame "{target_pose.header.frame_id}"'
+            f'in frame "{target_pose.header.frame_id}", '
+            f'object dims: h={object_height:.3f}, w={object_width:.3f}, d={object_depth:.3f}'
         )
 
         try:
             if action_type == 'pick':
-                success = self._execute_pick(target_pose)
+                success = self._execute_pick(target_pose, object_height, object_width)
             elif action_type == 'place':
                 success = self._execute_place(target_pose)
             else:
@@ -259,16 +265,24 @@ class ManipulatorService(Node):
             response.error_message = str(e)
             return response
 
-    def _execute_pick(self, target_pose: PoseStamped) -> bool:
+    def _execute_pick(self, target_pose: PoseStamped, object_height: float = 0.1, object_width: float = 0.05) -> bool:
         """Execute pick operation sequence using IK for target pose.
         
-        Uses a top-down approach with collision avoidance:
-        1. Move to position above the object (safe height)
-        2. Descend vertically to grasp position
+        Uses a top-down approach with collision avoidance based on object dimensions:
+        1. Move to position above the object (safe height based on object_height)
+        2. Descend vertically to grasp position (middle of object)
         3. Close gripper
         4. Lift and retract
+        
+        Args:
+            target_pose: Pose of the object (z is top surface from camera)
+            object_height: Estimated object height in meters
+            object_width: Estimated object width in meters
         """
-        self.get_logger().info('Starting pick sequence (top-down approach)')
+        self.get_logger().info(
+            f'Starting pick sequence (top-down approach), '
+            f'object height={object_height:.3f}m, width={object_width:.3f}m'
+        )
 
         # 1. Move to ready position
         if not self._move_arm_to_pose('ready', duration=2.0):
@@ -280,24 +294,36 @@ class ManipulatorService(Node):
             self.get_logger().error('Failed to open gripper')
             return False
 
-        # 3. Create poses for top-down approach
-        # Store original z for reference
-        original_z = target_pose.pose.position.z
-        self.get_logger().info(f'Target pose z: {original_z:.3f}')
+        # 3. Create poses for top-down approach using object dimensions
+        # The target_pose.z is the TOP of the object (what the camera sees)
+        # We need to grasp at the middle of the object
+        top_z = target_pose.pose.position.z
+        
+        # Calculate grasp height: middle of object = top - (height / 2)
+        # Add small margin to ensure we're gripping solidly
+        grasp_z = top_z - (object_height / 2) - 0.01  # 1cm below center for solid grip
+        
+        # Above pose: above the object with clearance
+        # Use object_height + margin to ensure we clear the top
+        clearance = max(0.05, object_height * 0.5)  # At least 5cm or half object height
+        above_z = top_z + clearance
+        
+        self.get_logger().info(
+            f'Pose calculation: top_z={top_z:.3f}, grasp_z={grasp_z:.3f}, above_z={above_z:.3f} '
+            f'(object_height={object_height:.3f})'
+        )
         
         # Above pose: directly above the object at safe height
         above_pose = PoseStamped()
         above_pose.header = copy.deepcopy(target_pose.header)
         above_pose.pose = copy.deepcopy(target_pose.pose)
-        above_pose.pose.position.z = original_z + 0.10  # 10cm above object
-        self.get_logger().info(f'Above pose z: {above_pose.pose.position.z:.3f}')
+        above_pose.pose.position.z = above_z
         
-        # Grasp pose: below detected surface (camera sees top of object)
+        # Grasp pose: at the calculated grasp height
         grasp_pose = PoseStamped()
         grasp_pose.header = copy.deepcopy(target_pose.header)
         grasp_pose.pose = copy.deepcopy(target_pose.pose)
-        grasp_pose.pose.position.z = original_z - 0.08  # 8cm below detected surface
-        self.get_logger().info(f'Grasp pose z: {grasp_pose.pose.position.z:.3f}')
+        grasp_pose.pose.position.z = grasp_z
         
         grasp_joints = self._compute_ik_for_pose(grasp_pose, apply_reach_offset=True)
         above_joints = None  # Initialize here

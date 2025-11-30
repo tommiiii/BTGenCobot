@@ -35,12 +35,22 @@ BT::NodeStatus PickObject::onStart()
     return BT::NodeStatus::FAILURE;
   }
 
+  // Get object dimensions (with defaults)
+  if (!getInput("object_height", object_height_)) {
+    object_height_ = 0.1;  // default 10cm
+  }
+  if (!getInput("object_width", object_width_)) {
+    object_width_ = 0.05;  // default 5cm
+  }
+
   RCLCPP_INFO(
     node_->get_logger(),
-    "PickObject: Object pose [%.2f, %.2f, %.2f]",
+    "PickObject: Object pose [%.2f, %.2f, %.2f], height=%.3f, width=%.3f",
     target_pose_.pose.position.x,
     target_pose_.pose.position.y,
-    target_pose_.pose.position.z);
+    target_pose_.pose.position.z,
+    object_height_,
+    object_width_);
 
   service_call_sent_ = false;
   return BT::NodeStatus::RUNNING;
@@ -63,6 +73,9 @@ BT::NodeStatus PickObject::onRunning()
     auto request = std::make_shared<btgencobot_interfaces::srv::ManipulatorAction::Request>();
     request->action_type = "pick";
     request->target_pose = target_pose_;
+    request->object_height = static_cast<float>(object_height_);
+    request->object_width = static_cast<float>(object_width_);
+    request->object_depth = static_cast<float>(object_width_);  // Assume symmetric for now
 
     RCLCPP_INFO(node_->get_logger(), "PickObject: Sending pick request to service...");
 

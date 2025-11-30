@@ -280,25 +280,23 @@ BT::NodeStatus DetectObject::onRunning()
           depth_tolerance = depth_range + 0.05f;
         }
 
-        // Collect object samples (closest cluster) and compute weighted centroid
+        // Collect object samples (closest cluster) and compute geometric centroid
         std::vector<DepthSample> object_samples;
-        double sum_x = 0.0, sum_y = 0.0, sum_weight = 0.0;
+        double sum_x = 0.0, sum_y = 0.0;
         
         for (const auto& sample : depth_samples) {
           if (sample.depth <= min_depth + depth_tolerance) {
             object_samples.push_back(sample);
-            // Weight by inverse depth (closer = more important) to emphasize front surface
-            double weight = 1.0 / sample.depth;
-            sum_x += sample.x * weight;
-            sum_y += sample.y * weight;
-            sum_weight += weight;
+            // Use unweighted sum for geometric center (symmetric grasp)
+            sum_x += sample.x;
+            sum_y += sample.y;
           }
         }
 
-        if (!object_samples.empty() && sum_weight > 0) {
-          // Compute depth-weighted centroid
-          refined_center_x = static_cast<float>(sum_x / sum_weight);
-          refined_center_y = static_cast<float>(sum_y / sum_weight);
+        if (!object_samples.empty()) {
+          // Compute geometric centroid of object cluster
+          refined_center_x = static_cast<float>(sum_x / object_samples.size());
+          refined_center_y = static_cast<float>(sum_y / object_samples.size());
 
           // Use median of object samples for robust depth
           std::sort(object_samples.begin(), object_samples.end(),
@@ -349,6 +347,30 @@ BT::NodeStatus DetectObject::onRunning()
     camera_frame,
     object_pose);
 
+  // Calculate object dimensions from bounding box using pinhole camera model
+  // real_size = (pixel_size * depth) / focal_length
+  double object_height = 0.1;  // default 10cm
+  double object_width = 0.05;  // default 5cm
+  
+  if (response->bbox.size() >= 4 && has_camera_info_ && depth > 0) {
+    float bbox_width_pixels = response->bbox[2] - response->bbox[0];
+    float bbox_height_pixels = response->bbox[3] - response->bbox[1];
+    
+    // Convert pixel dimensions to real-world dimensions
+    object_width = (bbox_width_pixels * depth) / fx_;
+    object_height = (bbox_height_pixels * depth) / fy_;
+    
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Object dimensions from bbox: width=%.3fm, height=%.3fm (bbox: %.0fx%.0f px, depth: %.2fm)",
+      object_width, object_height, bbox_width_pixels, bbox_height_pixels, depth);
+  } else {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Cannot calculate object dimensions, using defaults: width=%.3fm, height=%.3fm",
+      object_width, object_height);
+  }
+
   RCLCPP_INFO(
     node_->get_logger(),
     "Detected '%s' at bbox center (%.1f, %.1f) -> refined (%.1f, %.1f), depth %.2fm",
@@ -370,6 +392,8 @@ BT::NodeStatus DetectObject::onRunning()
   setOutput("object_pose", object_pose);
   setOutput("detected", true);
   setOutput("confidence", static_cast<double>(response->confidence));
+  setOutput("object_height", object_height);
+  setOutput("object_width", object_width);
 
   return BT::NodeStatus::SUCCESS;
 }

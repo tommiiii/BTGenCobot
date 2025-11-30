@@ -27,8 +27,8 @@ def generate_restricted_grammar(allowed_actions: List[str]) -> str:
         "DriveOnHeading": 'drive_on_heading: "<DriveOnHeading" " " dist_to_travel_attr " " speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
         "BackUp": 'backup: "<BackUp" " " backup_dist_attr " " backup_speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
         "Wait": 'wait: "<Wait" " " wait_duration_attr (" " name_attr)? " "? "/>"',
-        "DetectObject": 'detect_obj: "<DetectObject" " " object_description_attr " " detect_target_pose_attr " " detect_object_pose_attr (" " name_attr)? " "? "/>"',
-        "PickObject": 'pick_obj: "<PickObject" " " pick_target_pose_attr (" " name_attr)? " "? "/>"',
+        "DetectObject": 'detect_obj: "<DetectObject" " " object_description_attr " " detect_target_pose_attr " " detect_object_pose_attr " " detect_object_height_attr " " detect_object_width_attr (" " name_attr)? " "? "/>"',
+        "PickObject": 'pick_obj: "<PickObject" " " pick_target_pose_attr " " pick_object_height_attr " " pick_object_width_attr (" " name_attr)? " "? "/>"',
         "PlaceObject": 'place_obj: "<PlaceObject" " " place_target_pose_attr (" " name_attr)? " "? "/>"'
     }
     
@@ -123,7 +123,11 @@ wait_duration_attr: "wait_duration" " "? "=" " "? "\"" numeric_value "\""
 object_description_attr: "object_description" " "? "=" " "? "\"" att_value_content "\""
 detect_target_pose_attr: "target_pose" " "? "=" " "? "\"{goal}\""
 detect_object_pose_attr: "object_pose" " "? "=" " "? "\"{object_pose}\""
+detect_object_height_attr: "object_height" " "? "=" " "? "\"{object_height}\""
+detect_object_width_attr: "object_width" " "? "=" " "? "\"{object_width}\""
 pick_target_pose_attr: "target_pose" " "? "=" " "? "\"{object_pose}\""
+pick_object_height_attr: "object_height" " "? "=" " "? "\"{object_height}\""
+pick_object_width_attr: "object_width" " "? "=" " "? "\"{object_width}\""
 place_target_pose_attr: "target_pose" " "? "=" " "? "\"{object_pose}\""
 name_attr: "name" " "? "=" " "? "\"" att_value_content "\""
 
@@ -308,11 +312,15 @@ class BTGenerator:
             # If custom_grammar is a string, create CFG from it
             if isinstance(grammar_to_use, str):
                 from outlines.types import CFG
+                logger.info("Creating CFG pattern from custom grammar...")
+                cfg_creation_start = time.time()
                 cfg_pattern = CFG(grammar_to_use)
+                logger.info(f"CFG pattern created in {time.time() - cfg_creation_start:.2f}s")
             else:
                 cfg_pattern = grammar_to_use
 
             # Call the Outlines model directly with the CFG output type
+            logger.info("Starting model generation...")
             result = self.outlines_model(
                 prompt,
                 cfg_pattern,
@@ -331,6 +339,8 @@ class BTGenerator:
         except Exception as e:
             error_msg = f"XML generation failed: {str(e)}"
             logger.error(error_msg)
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None, error_msg
 
     def generate_bt(

@@ -18,6 +18,8 @@ namespace bt_nav2_plugins
  *
  * Input Ports:
  *   target_pose - Pose of object to pick up (should receive object_pose from DetectObject)
+ *   object_height - Estimated height of object in meters (for collision-free approach)
+ *   object_width - Estimated width of object in meters
  *
  * This node calls the /manipulator_action service to execute a pick operation.
  * The service uses ikpy for inverse kinematics and controls the arm via
@@ -35,7 +37,9 @@ public:
   static BT::PortsList providedPorts()
   {
     return {
-      BT::InputPort<geometry_msgs::msg::PoseStamped>("target_pose", "Pose of object to pick")
+      BT::InputPort<geometry_msgs::msg::PoseStamped>("target_pose", "Pose of object to pick"),
+      BT::InputPort<double>("object_height", 0.1, "Estimated object height in meters"),
+      BT::InputPort<double>("object_width", 0.05, "Estimated object width in meters")
     };
   }
 
@@ -46,6 +50,8 @@ private:
 
   rclcpp::Node::SharedPtr node_;
   geometry_msgs::msg::PoseStamped target_pose_;
+  double object_height_;
+  double object_width_;
 
   // Service client for manipulator action
   rclcpp::Client<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr manipulator_client_;

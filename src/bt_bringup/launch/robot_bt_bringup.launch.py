@@ -106,18 +106,16 @@ def generate_launch_description():
         emulate_tty=True
     )
 
-    # Launch Grounded-SAM Object Detection Service
-    # Uses GroundingDINO + SAM for text-prompted object detection with segmentation
-    florence2_sam_service = Node(
+    # Launch Florence-2 Object Detection Service
+    # Uses Florence-2 for text-prompted object detection
+    florence2_service = Node(
         package='vision_services',
-        executable='florence2_sam_service',
-        name='florence2_sam_service',
+        executable='florence2_service',
+        name='florence2_service',
         parameters=[{
             'use_sim_time': use_sim_time,
             'use_mock': False,  # Use real models
             'florence2_model': 'microsoft/Florence-2-base',
-            'sam_weights': '/workspace/models/sam/sam_vit_b_01ec64.pth',
-            'sam_model_type': 'vit_b',
             'device': 'auto',
             'publish_debug_images': True,
         }],
@@ -176,8 +174,8 @@ def generate_launch_description():
     # Add BT Interface Node (main action server)
     ld.add_action(bt_interface_node)
 
-    # Add Grounded-SAM Service (object detection)
-    ld.add_action(florence2_sam_service)
+    # Add Florence-2 Service (object detection)
+    ld.add_action(florence2_service)
 
     # Add Manipulator Control Service (pick/place operations)
     ld.add_action(manipulator_service)

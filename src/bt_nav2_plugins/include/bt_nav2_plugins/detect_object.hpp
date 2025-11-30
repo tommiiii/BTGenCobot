@@ -51,7 +51,9 @@ public:
       BT::OutputPort<geometry_msgs::msg::PoseStamped>("target_pose", "Approach pose for navigation"),
       BT::OutputPort<geometry_msgs::msg::PoseStamped>("object_pose", "Actual object pose for manipulation"),
       BT::OutputPort<bool>("detected", "Whether object was detected"),
-      BT::OutputPort<double>("confidence", "Detection confidence score")
+      BT::OutputPort<double>("confidence", "Detection confidence score"),
+      BT::OutputPort<double>("object_height", "Estimated object height in meters"),
+      BT::OutputPort<double>("object_width", "Estimated object width in meters")
     };
   }
 
