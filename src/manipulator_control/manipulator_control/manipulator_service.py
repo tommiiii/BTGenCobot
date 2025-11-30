@@ -17,7 +17,7 @@ from btgencobot_interfaces.srv import ManipulatorAction
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 
 from builtin_interfaces.msg import Duration
 import tf2_ros
@@ -25,6 +25,7 @@ from tf2_geometry_msgs import do_transform_pose_stamped
 import numpy as np
 import math
 import time
+import copy
 
 try:
     import ikpy.chain
@@ -41,12 +42,12 @@ class ManipulatorService(Node):
     ARM_JOINTS = ['joint1', 'joint2', 'joint3', 'joint4']
     GRIPPER_JOINTS = ['gripper_left_joint']
 
-    # Joint limits (from URDF)
+    # Joint limits (from turtlebot3_manipulation_description URDF)
     JOINT_LIMITS = {
-        'joint1': (-2.827, 2.827),      # ±162°
-        'joint2': (-1.791, 1.571),      # -102° to +90°
-        'joint3': (-0.942, 1.382),      # -54° to +79°
-        'joint4': (-1.791, 2.042),      # -102° to +117°
+        'joint1': (-2.827, 2.827),      # ±pi*0.9 = ±162°
+        'joint2': (-1.791, 1.571),      # -pi*0.57 to +pi*0.5
+        'joint3': (-0.942, 1.382),      # -pi*0.3 to +pi*0.44
+        'joint4': (-1.791, 2.042),      # -pi*0.57 to +pi*0.65
     }
 
     # Gripper positions
@@ -54,13 +55,13 @@ class ManipulatorService(Node):
     GRIPPER_CLOSED = -0.010
 
     # Predefined arm positions (joint1, joint2, joint3, joint4)
-    # These are tuned for OpenManipulator-X mounted with -90° pitch on base_scan
+    # These are tuned for OpenManipulator-X - top-down grasping configuration
     POSES = {
         'home': [0.0, 0.0, 0.0, 0.0],
-        'ready': [0.0, -0.3, 0.5, -0.2],
-        'pre_grasp': [0.0, 0.2, 0.6, 0.8],
-        'grasp': [0.0, 0.5, 0.4, 1.0],
-        'lift': [0.0, 0.0, 0.5, 0.5],
+        'ready': [0.0, 0.0, 0.0, 0.0],  # Straight up, ready to move
+        'pre_grasp': [0.0, 0.4, 0.8, 0.4],  # Arm extended forward, gripper pointing down
+        'grasp': [0.0, 0.6, 0.6, 0.6],  # Lower position for grasping
+        'lift': [0.0, 0.2, 0.6, 0.4],  # Lifted position after grasp
     }
 
     def __init__(self):
@@ -122,62 +123,65 @@ class ManipulatorService(Node):
         self._wait_for_servers()
 
     def _init_ikpy_chain(self):
-        """Initialize ikpy chain for the OpenManipulator-X arm."""
+        """Initialize ikpy chain for the OpenManipulator-X arm.
+        
+        Based on turtlebot3_manipulation_description URDF:
+        - Arm mounted on base_link at xyz="-0.092 0 0.091" rpy="0 0 0"
+        - joint1 (link1→link2): xyz="0.012 0 0.017", rotates around Z
+        - joint2 (link2→link3): xyz="0 0 0.0595", rotates around Y
+        - joint3 (link3→link4): xyz="0.024 0 0.128", rotates around Y
+        - joint4 (link4→link5): xyz="0.124 0 0", rotates around Y
+        - end_effector: xyz="0.126 0 0" from link5
+        """
         try:
-            # Define the kinematic chain manually based on URDF
-            # The arm is mounted with -90° pitch, so the chain needs adjustment
-            # Chain: base_scan -> link1 -> link2 -> link3 -> link4 -> link5 -> end_effector
-            
-            # Link lengths from URDF (in meters)
-            # link1 to link2: xyz="0.012 0.0 0.017"
-            # link2 to link3: xyz="0.0 0.0 0.0595"
-            # link3 to link4: xyz="0.024 0 0.128"
-            # link4 to link5: xyz="0.124 0.0 0.0"
-            # link5 to end_effector: xyz="0.126 0.0 0.0"
-
-            # Define links with active_links mask to handle fixed end-effector
+            # Define the kinematic chain matching the URDF exactly
+            # We transform target poses to link1 frame, so chain starts from link1
             links = [
                 ikpy.link.OriginLink(),
-                ikpy.link.URDFLink(
-                    name="link1",
-                    origin_translation=[0, 0, 0.04],  # mount offset from base_scan
-                    origin_orientation=[0, -np.pi/2, 0],  # -90° pitch mount
-                    rotation=[0, 0, 1],  # joint1 rotates around Z
-                ),
+                # joint1: link1 to link2
                 ikpy.link.URDFLink(
                     name="link2",
-                    origin_translation=[0.012, 0, 0.017],
+                    origin_translation=[0.012, 0.0, 0.017],
+                    origin_orientation=[0, 0, 0],
+                    rotation=[0, 0, 1],  # joint1 rotates around Z
+                ),
+                # joint2: link2 to link3
+                ikpy.link.URDFLink(
+                    name="link3",
+                    origin_translation=[0.0, 0.0, 0.0595],
                     origin_orientation=[0, 0, 0],
                     rotation=[0, 1, 0],  # joint2 rotates around Y
                 ),
+                # joint3: link3 to link4
                 ikpy.link.URDFLink(
-                    name="link3",
-                    origin_translation=[0, 0, 0.0595],
+                    name="link4",
+                    origin_translation=[0.024, 0.0, 0.128],
                     origin_orientation=[0, 0, 0],
                     rotation=[0, 1, 0],  # joint3 rotates around Y
                 ),
+                # joint4: link4 to link5
                 ikpy.link.URDFLink(
-                    name="link4",
-                    origin_translation=[0.024, 0, 0.128],
+                    name="link5",
+                    origin_translation=[0.124, 0.0, 0.0],
                     origin_orientation=[0, 0, 0],
                     rotation=[0, 1, 0],  # joint4 rotates around Y
                 ),
+                # end effector (fixed)
                 ikpy.link.URDFLink(
                     name="end_effector",
-                    origin_translation=[0.124 + 0.126, 0, 0],  # link5 + end_effector offset
+                    origin_translation=[0.126, 0.0, 0.0],
                     origin_orientation=[0, 0, 0],
-                    rotation=[0, 0, 0],  # Dummy rotation axis (will be masked)
+                    rotation=[0, 0, 0],  # Fixed link
                 ),
             ]
-            # active_links_mask: True for active joints, False for fixed links
-            # [OriginLink, link1, link2, link3, link4, end_effector]
+            # active_links_mask: [OriginLink, joint1, joint2, joint3, joint4, end_effector]
             active_links_mask = [False, True, True, True, True, False]
             self.arm_chain = ikpy.chain.Chain(
                 name='open_manipulator_x',
                 links=links,
                 active_links_mask=active_links_mask
             )
-            self.get_logger().info('ikpy chain initialized successfully')
+            self.get_logger().info('ikpy chain initialized successfully for turtlebot3_manipulation')
         except Exception as e:
             self.get_logger().error(f'Failed to initialize ikpy chain: {e}')
             self.arm_chain = None
@@ -230,7 +234,8 @@ class ManipulatorService(Node):
             f'Received {action_type} request at '
             f'({target_pose.pose.position.x:.3f}, '
             f'{target_pose.pose.position.y:.3f}, '
-            f'{target_pose.pose.position.z:.3f})'
+            f'{target_pose.pose.position.z:.3f}) '
+            f'in frame "{target_pose.header.frame_id}"'
         )
 
         try:
@@ -255,8 +260,15 @@ class ManipulatorService(Node):
             return response
 
     def _execute_pick(self, target_pose: PoseStamped) -> bool:
-        """Execute pick operation sequence using IK for target pose."""
-        self.get_logger().info('Starting pick sequence')
+        """Execute pick operation sequence using IK for target pose.
+        
+        Uses a top-down approach with collision avoidance:
+        1. Move to position above the object (safe height)
+        2. Descend vertically to grasp position
+        3. Close gripper
+        4. Lift and retract
+        """
+        self.get_logger().info('Starting pick sequence (top-down approach)')
 
         # 1. Move to ready position
         if not self._move_arm_to_pose('ready', duration=2.0):
@@ -268,44 +280,67 @@ class ManipulatorService(Node):
             self.get_logger().error('Failed to open gripper')
             return False
 
-        # 3. Compute IK for target position
-        grasp_joints = self._compute_ik_for_pose(target_pose)
+        # 3. Create poses for top-down approach
+        # Store original z for reference
+        original_z = target_pose.pose.position.z
+        self.get_logger().info(f'Target pose z: {original_z:.3f}')
+        
+        # Above pose: directly above the object at safe height
+        above_pose = PoseStamped()
+        above_pose.header = copy.deepcopy(target_pose.header)
+        above_pose.pose = copy.deepcopy(target_pose.pose)
+        above_pose.pose.position.z = original_z + 0.10  # 10cm above object
+        self.get_logger().info(f'Above pose z: {above_pose.pose.position.z:.3f}')
+        
+        # Grasp pose: below detected surface (camera sees top of object)
+        grasp_pose = PoseStamped()
+        grasp_pose.header = copy.deepcopy(target_pose.header)
+        grasp_pose.pose = copy.deepcopy(target_pose.pose)
+        grasp_pose.pose.position.z = original_z - 0.08  # 8cm below detected surface
+        self.get_logger().info(f'Grasp pose z: {grasp_pose.pose.position.z:.3f}')
+        
+        grasp_joints = self._compute_ik_for_pose(grasp_pose, apply_reach_offset=True)
+        above_joints = None  # Initialize here
+        
         if grasp_joints is None:
-            self.get_logger().warn('IK failed, falling back to predefined poses')
-            # Fallback to predefined poses
+            self.get_logger().warn('IK failed for grasp pose, falling back to predefined poses')
             if not self._move_arm_to_pose('pre_grasp', duration=2.0):
                 return False
             if not self._move_arm_to_pose('grasp', duration=2.0):
                 return False
         else:
-            # Compute pre-grasp position (slightly above/back from grasp)
-            pre_grasp_pose = PoseStamped()
-            pre_grasp_pose.header = target_pose.header
-            pre_grasp_pose.pose = target_pose.pose
-            pre_grasp_pose.pose.position.z += 0.05  # 5cm above
-            
-            pre_grasp_joints = self._compute_ik_for_pose(pre_grasp_pose)
-            if pre_grasp_joints:
-                self.get_logger().info(f'Moving to pre-grasp IK position: {pre_grasp_joints}')
-                if not self._move_arm_to_joints(pre_grasp_joints, duration=2.0):
-                    self.get_logger().error('Failed to move to pre-grasp position')
+            # Compute position above object
+            above_joints = self._compute_ik_for_pose(above_pose, apply_reach_offset=True)
+            if above_joints is None:
+                self.get_logger().warn('IK failed for above pose, trying grasp directly')
+            else:
+                # Move to position above object first (collision-free)
+                self.get_logger().info(f'Moving to position above object: {above_joints}')
+                if not self._move_arm_to_joints(above_joints, duration=2.0):
+                    self.get_logger().error('Failed to move above object')
                     return False
             
-            # Move to grasp position
-            self.get_logger().info(f'Moving to grasp IK position: {grasp_joints}')
+            # Descend vertically to grasp position
+            self.get_logger().info(f'Descending to grasp position: {grasp_joints}')
             if not self._move_arm_to_joints(grasp_joints, duration=2.0):
-                self.get_logger().error('Failed to move to grasp position')
+                self.get_logger().error('Failed to descend to grasp position')
                 return False
 
-        # 4. Close gripper
-        if not self._move_gripper(self.GRIPPER_CLOSED, duration=1.5):
+        # 4. Close gripper with force-based grasping (fast)
+        if not self._move_gripper(self.GRIPPER_CLOSED, duration=0.5, force_grasp=True):
             self.get_logger().error('Failed to close gripper')
             return False
 
-        # 5. Lift object
-        if not self._move_arm_to_pose('lift', duration=2.0):
-            self.get_logger().error('Failed to lift object')
-            return False
+        # 5. Lift object (back to above position)
+        if above_joints:
+            self.get_logger().info('Lifting object')
+            if not self._move_arm_to_joints(above_joints, duration=2.0):
+                self.get_logger().error('Failed to lift object')
+                return False
+        else:
+            if not self._move_arm_to_pose('lift', duration=2.0):
+                self.get_logger().error('Failed to lift object')
+                return False
 
         # 6. Return to ready position
         if not self._move_arm_to_pose('ready', duration=2.0):
@@ -315,18 +350,44 @@ class ManipulatorService(Node):
         self.get_logger().info('Pick sequence completed successfully')
         return True
 
-    def _compute_ik_for_pose(self, target_pose: PoseStamped) -> list:
-        """Transform target pose to arm frame and compute IK."""
+    def _compute_ik_for_pose(self, target_pose: PoseStamped, apply_reach_offset: bool = True) -> list:
+        """Transform target pose to arm frame and compute IK.
+        
+        Args:
+            target_pose: Target pose in any frame (will be transformed to arm frame)
+            apply_reach_offset: If True, add forward offset to reach into the object.
+                              If False, compute position without offset (for approach).
+        
+        Returns:
+            List of joint angles, or None if IK fails
+        """
         if self.arm_chain is None:
             self.get_logger().warn('IK chain not available')
             return None
 
         try:
-            # Transform pose from map frame to arm base frame (link1)
-            # The arm is mounted on base_scan with -90° pitch
+            # Transform pose from source frame to arm base frame (link1)
             arm_base_frame = "link1"
             
-            # Wait for transform
+            self.get_logger().info(
+                f'Computing IK: input pose ({target_pose.pose.position.x:.3f}, '
+                f'{target_pose.pose.position.y:.3f}, {target_pose.pose.position.z:.3f}) '
+                f'in frame "{target_pose.header.frame_id}"'
+            )
+            
+            # Get current robot position for debugging
+            try:
+                robot_tf = self.tf_buffer.lookup_transform(
+                    "map", "base_link", rclpy.time.Time(),
+                    timeout=rclpy.duration.Duration(seconds=0.5))
+                self.get_logger().info(
+                    f'Robot currently at map position: ({robot_tf.transform.translation.x:.3f}, '
+                    f'{robot_tf.transform.translation.y:.3f})'
+                )
+            except Exception as e:
+                self.get_logger().warn(f'Could not get robot position: {e}')
+            
+            # Transform to arm frame
             try:
                 transform = self.tf_buffer.lookup_transform(
                     arm_base_frame,
@@ -346,8 +407,30 @@ class ManipulatorService(Node):
             z = pose_in_arm.pose.position.z
 
             self.get_logger().info(
-                f'Target in arm frame: ({x:.3f}, {y:.3f}, {z:.3f})'
+                f'Target in arm frame (link1): ({x:.3f}, {y:.3f}, {z:.3f})'
             )
+
+            # For front approach grasping:
+            # - apply_reach_offset=True: move gripper forward into the object for grasping
+            # - apply_reach_offset=False: position before the object for approach
+            reach_distance = math.sqrt(x*x + y*y)
+            if reach_distance > 0.01:  # Avoid division by zero
+                if apply_reach_offset:
+                    # Extend forward to grasp - gripper needs to reach into object center
+                    grasp_reach_offset = 0.04  # 4cm forward into object
+                    x += grasp_reach_offset * (x / reach_distance)
+                    y += grasp_reach_offset * (y / reach_distance)
+                    self.get_logger().info(
+                        f'Grasp position with +{grasp_reach_offset}m offset: ({x:.3f}, {y:.3f}, {z:.3f})'
+                    )
+                else:
+                    # Pull back for approach position
+                    approach_pullback = 0.05  # 5cm back from object
+                    x -= approach_pullback * (x / reach_distance)
+                    y -= approach_pullback * (y / reach_distance)
+                    self.get_logger().info(
+                        f'Approach position with -{approach_pullback}m offset: ({x:.3f}, {y:.3f}, {z:.3f})'
+                    )
 
             # Compute IK
             return self._compute_ik([x, y, z])
@@ -498,8 +581,19 @@ class ManipulatorService(Node):
         self.get_logger().debug('Arm trajectory completed')
         return True
 
-    def _move_gripper(self, position: float, duration: float = 1.0) -> bool:
-        """Move gripper to position using GripperCommand action."""
+    def _move_gripper(self, position: float, duration: float = 1.0, force_grasp: bool = False) -> bool:
+        """Move gripper to position using GripperCommand action.
+        
+        Args:
+            position: Target gripper position (GRIPPER_OPEN to GRIPPER_CLOSED)
+            duration: Timeout duration for the action
+            force_grasp: If True, consider 'stalled' as success (object grasped)
+                        This enables force-based grasping where the gripper closes
+                        until it meets resistance from the object.
+        
+        Returns:
+            True if gripper action succeeded, False otherwise
+        """
         # Wait for gripper action server if not ready (may take time to spawn)
         if not self.gripper_action_client.server_is_ready():
             self.get_logger().info('Waiting for gripper action server...')
@@ -514,11 +608,15 @@ class ManipulatorService(Node):
         # Create GripperCommand goal
         goal = GripperCommand.Goal()
         goal.command.position = position
-        goal.command.max_effort = 10.0  # Max effort for gripping
+        # Use higher effort for force-based grasping to ensure firm grip
+        goal.command.max_effort = 20.0 if force_grasp else 10.0
 
         # Send goal and wait using polling
         action_name = 'open' if position > 0 else 'close'
-        self.get_logger().info(f'Gripper {action_name}: {position}')
+        self.get_logger().info(
+            f'Gripper {action_name}: {position} '
+            f'(force_grasp={force_grasp}, max_effort={goal.command.max_effort})'
+        )
         future = self.gripper_action_client.send_goal_async(goal)
         
         # Poll for goal acceptance
@@ -547,15 +645,49 @@ class ManipulatorService(Node):
             time.sleep(0.1)
 
         result = result_future.result()
-        # GripperCommand result has 'reached_goal' and 'stalled' fields
-        if not result.result.reached_goal and not result.result.stalled:
-            self.get_logger().warn(f'Gripper may not have reached target position')
+        reached_goal = result.result.reached_goal
+        stalled = result.result.stalled
         
-        self.get_logger().info(f'Gripper {action_name} completed')
-        return True
+        self.get_logger().info(
+            f'Gripper result: reached_goal={reached_goal}, stalled={stalled}'
+        )
+        
+        # Determine success based on mode
+        if force_grasp:
+            # Force-based grasping: stalled means we're gripping an object (SUCCESS)
+            # reached_goal without stalling means gripper closed fully (no object)
+            if stalled:
+                self.get_logger().info('Force grasp successful - gripper stalled on object')
+                return True
+            elif reached_goal:
+                self.get_logger().warn('Gripper closed fully - may not have grasped object')
+                return True  # Still return True, object might be very small
+            else:
+                self.get_logger().error('Force grasp failed - neither stalled nor reached goal')
+                return False
+        else:
+            # Normal mode: we expect to reach the goal position
+            if reached_goal:
+                self.get_logger().info(f'Gripper {action_name} completed')
+                return True
+            elif stalled:
+                self.get_logger().warn(f'Gripper {action_name} stalled before reaching goal')
+                return True  # Still consider success - might be ok
+            else:
+                self.get_logger().warn(f'Gripper may not have reached target position')
+                return True  # Be lenient
 
-    def _compute_ik(self, target_position: list) -> list:
-        """Compute inverse kinematics for target position using ikpy."""
+    def _compute_ik(self, target_position: list, horizontal_gripper: bool = True) -> list:
+        """Compute inverse kinematics for target position using ikpy.
+        
+        Args:
+            target_position: [x, y, z] target position in arm frame
+            horizontal_gripper: If True, adjust joint4 to keep gripper horizontal
+                               (parallel to ground for top-down grasping)
+        
+        Returns:
+            List of joint angles [joint1, joint2, joint3, joint4], or None if IK fails
+        """
         if self.arm_chain is None:
             self.get_logger().warn('IK not available, returning None')
             return None
@@ -570,7 +702,34 @@ class ManipulatorService(Node):
             # Extract joint angles (skip first and last elements - origin and end effector)
             joint_angles = ik_solution[1:5].tolist()
 
-            self.get_logger().info(f'IK solution: {joint_angles}')
+            self.get_logger().info(f'IK solution (raw): {joint_angles}')
+            
+            if horizontal_gripper:
+                # Adjust joint4 to keep gripper horizontal (parallel to ground)
+                # For OpenManipulator-X, the gripper pitch = joint2 + joint3 + joint4
+                # For gripper parallel to ground: pitch = 0
+                # So: joint4 = -joint2 - joint3
+                joint2 = joint_angles[1]
+                joint3 = joint_angles[2]
+                joint4_horizontal = -joint2 - joint3
+                
+                # Clamp to joint4 limits
+                joint4_limits = self.JOINT_LIMITS['joint4']
+                joint4_clamped = max(joint4_limits[0], min(joint4_limits[1], joint4_horizontal))
+                
+                if abs(joint4_clamped - joint4_horizontal) > 0.01:
+                    self.get_logger().warn(
+                        f'joint4 for horizontal gripper ({joint4_horizontal:.3f}) '
+                        f'clamped to limits: {joint4_clamped:.3f}'
+                    )
+                
+                joint_angles[3] = joint4_clamped
+                self.get_logger().info(
+                    f'Adjusted for horizontal gripper: joint4={joint4_clamped:.3f} '
+                    f'(pitch={joint2 + joint3 + joint4_clamped:.3f} rad)'
+                )
+
+            self.get_logger().info(f'IK solution (final): {joint_angles}')
             return joint_angles
 
         except Exception as e:

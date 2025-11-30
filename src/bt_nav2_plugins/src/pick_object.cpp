@@ -29,7 +29,7 @@ BT::NodeStatus PickObject::onStart()
 {
   RCLCPP_INFO(node_->get_logger(), "PickObject: Starting pick operation");
 
-  // Get target pose from input port
+  // Get target pose from input port (receives object_pose value from BT)
   if (!getInput("target_pose", target_pose_)) {
     RCLCPP_ERROR(node_->get_logger(), "PickObject: target_pose not provided");
     return BT::NodeStatus::FAILURE;
@@ -37,7 +37,7 @@ BT::NodeStatus PickObject::onStart()
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "PickObject: Target pose [%.2f, %.2f, %.2f]",
+    "PickObject: Object pose [%.2f, %.2f, %.2f]",
     target_pose_.pose.position.x,
     target_pose_.pose.position.y,
     target_pose_.pose.position.z);

@@ -66,11 +66,13 @@ private:
   void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
 
   // Convert pixel coordinates to 3D pose using camera intrinsics
+  // Returns approach pose (for navigation) and stores actual object pose in object_pose_out
   geometry_msgs::msg::PoseStamped pixelToPose(
     float center_x,
     float center_y,
     float depth_value,
-    const std::string & frame_id);
+    const std::string & frame_id,
+    geometry_msgs::msg::PoseStamped & object_pose_out);
 
   // Node and TF
   rclcpp::Node::SharedPtr node_;         // Shared Nav2 node for service calls

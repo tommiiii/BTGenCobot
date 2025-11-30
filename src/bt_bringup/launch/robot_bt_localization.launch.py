@@ -57,7 +57,7 @@ def generate_launch_description():
         description='Directory to save generated BehaviorTrees'
     )
 
-    # Launch Gazebo with robot (use_rviz=true to start RViz)
+    # Launch Gazebo with robot (use_rviz=true to start RViz, headless=false for GUI)
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_tb3_manipulation, 'launch', 'gazebo.launch.py')
@@ -65,7 +65,8 @@ def generate_launch_description():
         launch_arguments={
             'use_sim_time': use_sim_time,
             'use_rviz': 'true',
-            'world': world
+            'world': world,
+            'headless': 'false'
         }.items()
     )
 

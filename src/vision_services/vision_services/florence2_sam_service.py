@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Florence-2 + SAM Object Detection and Segmentation Service Node
+"""Florence-2 Object Detection Service Node
 
-This ROS2 service node provides object detection and segmentation using:
+This ROS2 service node provides object detection using:
 - Florence-2 for text-prompted object detection (VLM-based, understands attributes)
-- SAM for fast, accurate segmentation masks
+- Bounding box sampling for depth/pose estimation
 
 Service: /detect_object (btgencobot_interfaces/srv/DetectObject)
 """
@@ -20,7 +20,6 @@ import time
 try:
     import torch
     from transformers import AutoProcessor, AutoModelForCausalLM
-    from segment_anything import sam_model_registry, SamPredictor
     from PIL import Image as PILImage
     DEPENDENCIES_AVAILABLE = True
     import_error = None
@@ -29,11 +28,11 @@ except ImportError as e:
     import_error = str(e)
 
 
-class Florence2SAMService(Node):
-    """ROS2 service node for Florence-2 + SAM object detection and segmentation"""
+class Florence2Service(Node):
+    """ROS2 service node for Florence-2 object detection with bounding box pose estimation"""
 
     def __init__(self):
-        super().__init__('florence2_sam_service')
+        super().__init__('florence2_service')
         self._declare_parameters()
         self._setup_device()
         self._initialize_models()
@@ -43,15 +42,11 @@ class Florence2SAMService(Node):
         """Declare and load ROS parameters"""
         self.declare_parameter('use_mock', False)
         self.declare_parameter('florence2_model', 'microsoft/Florence-2-base')
-        self.declare_parameter('sam_weights', '/workspace/models/sam/sam_vit_b_01ec64.pth')
-        self.declare_parameter('sam_model_type', 'vit_b')
         self.declare_parameter('device', 'auto')
         self.declare_parameter('publish_debug_images', True)
 
         self.use_mock = self.get_parameter('use_mock').value
         self.florence2_model_name = self.get_parameter('florence2_model').value
-        self.sam_weights = self.get_parameter('sam_weights').value
-        self.sam_model_type = self.get_parameter('sam_model_type').value
         self.device_param = self.get_parameter('device').value
         self.publish_debug_images = self.get_parameter('publish_debug_images').value
 
@@ -62,15 +57,14 @@ class Florence2SAMService(Node):
         else:
             self.device = self.device_param
 
-        self.get_logger().info('Florence-2 + SAM Service Node starting...')
+        self.get_logger().info('Florence-2 Service Node starting...')
         self.get_logger().info(f'Use mock: {self.use_mock}')
         self.get_logger().info(f'Device: {self.device}')
 
     def _initialize_models(self):
-        """Initialize Florence-2 and SAM models or fallback to mock mode"""
+        """Initialize Florence-2 model or fallback to mock mode"""
         self.florence2_model = None
         self.florence2_processor = None
-        self.sam_predictor = None
         self.bridge = CvBridge()
 
         if not self.use_mock:
@@ -82,10 +76,10 @@ class Florence2SAMService(Node):
                 self._load_models()
 
         if self.use_mock:
-            self.get_logger().warning('Running in MOCK MODE - will return fake detections and masks')
+            self.get_logger().warning('Running in MOCK MODE - will return fake detections')
 
     def _load_models(self):
-        """Load Florence-2 and SAM models"""
+        """Load Florence-2 model"""
         try:
             # Load Florence-2
             self.get_logger().info('Loading Florence-2 model...')
@@ -104,15 +98,6 @@ class Florence2SAMService(Node):
             )
             self.get_logger().info('Florence-2 model loaded successfully')
 
-            # Load SAM
-            self.get_logger().info('Loading SAM model...')
-            self.get_logger().info(f'Model type: {self.sam_model_type}')
-            self.get_logger().info(f'Weights: {self.sam_weights}')
-            sam = sam_model_registry[self.sam_model_type](checkpoint=self.sam_weights)
-            sam.to(device=self.device)
-            self.sam_predictor = SamPredictor(sam)
-            self.get_logger().info('SAM model loaded successfully')
-
         except Exception as e:
             self.get_logger().error(f'Failed to load models: {e}')
             import traceback
@@ -127,7 +112,7 @@ class Florence2SAMService(Node):
             '/detect_object',
             self.detect_callback
         )
-        self.debug_image_pub = self.create_publisher(Image, '/florence2_sam/debug_image', 10)
+        self.debug_image_pub = self.create_publisher(Image, '/florence2/debug_image', 10)
         self.get_logger().info('Service /detect_object ready')
 
     def detect_callback(self, request, response):
@@ -197,7 +182,7 @@ class Florence2SAMService(Node):
             return self._detect_and_segment(image, request.object_description, request.box_threshold)
 
     def _detect_and_segment(self, image, text_prompt, box_threshold):
-        """Run Florence-2 detection + SAM segmentation"""
+        """Run Florence-2 detection with bounding box pose estimation"""
         try:
             # Convert to PIL Image
             pil_image = PILImage.fromarray(image)
@@ -308,22 +293,8 @@ class Florence2SAMService(Node):
                 )
             
             selected_detection = all_detections[0]
-            x1, y1, x2, y2 = selected_detection['bbox']
-            
-            # Run SAM segmentation
-            self.sam_predictor.set_image(image)
-            input_box = np.array([x1, y1, x2, y2])
-            masks, iou_predictions, _ = self.sam_predictor.predict(
-                point_coords=None,
-                point_labels=None,
-                box=input_box[None, :],
-                multimask_output=False
-            )
 
-            mask = masks[0]
-            mask_iou = float(iou_predictions[0])
-            self.get_logger().debug(f'Segmentation mask IoU: {mask_iou:.3f}')
-
+            # Use bounding box center for pose estimation (no SAM segmentation)
             return self._create_detection_result(
                 detected=True,
                 confidence=selected_detection['confidence'],
@@ -331,12 +302,11 @@ class Florence2SAMService(Node):
                 center_y=selected_detection['center_y'],
                 bbox=selected_detection['bbox'],
                 phrase=selected_detection['phrase'],
-                mask=mask.astype(np.uint8),
                 all_detections=all_detections
             )
 
         except Exception as e:
-            self.get_logger().error(f'Florence-2 + SAM inference failed: {e}')
+            self.get_logger().error(f'Florence-2 inference failed: {e}')
             import traceback
             self.get_logger().error(traceback.format_exc())
             return self._create_detection_result(detected=False, error=str(e))
@@ -354,13 +324,6 @@ class Florence2SAMService(Node):
         x2 = center_x + bbox_width / 2
         y2 = center_y + bbox_height / 2
 
-        # Create mock elliptical mask
-        mask = np.zeros((h, w), dtype=np.uint8)
-        y_indices, x_indices = np.ogrid[:h, :w]
-        ellipse_mask = (((x_indices - center_x) / (bbox_width / 2)) ** 2 +
-                       ((y_indices - center_y) / (bbox_height / 2)) ** 2) <= 1
-        mask[ellipse_mask] = 1
-
         self.get_logger().info(f'MOCK: Detected "{text_prompt}" at center ({center_x:.1f}, {center_y:.1f})')
 
         return self._create_detection_result(
@@ -369,8 +332,7 @@ class Florence2SAMService(Node):
             center_x=center_x,
             center_y=center_y,
             bbox=[x1, y1, x2, y2],
-            phrase=text_prompt,
-            mask=mask
+            phrase=text_prompt
         )
 
 
@@ -457,15 +419,6 @@ class Florence2SAMService(Node):
         try:
             debug_img = cv2.cvtColor(image.copy(), cv2.COLOR_RGB2BGR)
             
-            # Draw mask overlay (only for selected detection)
-            if result.get('mask') is not None:
-                mask = result['mask']
-                overlay = debug_img.copy()
-                overlay[mask > 0] = [0, 255, 0]
-                debug_img = cv2.addWeighted(debug_img, 0.7, overlay, 0.3, 0)
-                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                cv2.drawContours(debug_img, contours, -1, (0, 255, 0), 2)
-            
             # Draw top 3 detections
             top_3 = all_detections[:3]
             colors = [(0, 0, 255), (0, 165, 255), (0, 255, 255)]  # Red, Orange, Yellow
@@ -503,7 +456,7 @@ class Florence2SAMService(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Florence2SAMService()
+    node = Florence2Service()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

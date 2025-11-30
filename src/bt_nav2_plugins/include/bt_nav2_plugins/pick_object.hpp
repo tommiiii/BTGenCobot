@@ -17,7 +17,7 @@ namespace bt_nav2_plugins
  * @brief BT node to pick up an object with the manipulator
  *
  * Input Ports:
- *   target_pose - Pose of object to pick up
+ *   target_pose - Pose of object to pick up (should receive object_pose from DetectObject)
  *
  * This node calls the /manipulator_action service to execute a pick operation.
  * The service uses ikpy for inverse kinematics and controls the arm via

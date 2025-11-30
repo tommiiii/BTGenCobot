@@ -199,8 +199,10 @@ BT::NodeStatus DetectObject::onRunning()
     return BT::NodeStatus::FAILURE;
   }
 
-  // Sample depth using segmentation mask for accurate object depth
+  // Improved depth sampling: find the object (closest surface) and compute depth-weighted centroid
   float depth = 1.5;  // Default if no depth available
+  float refined_center_x = response->center_x;
+  float refined_center_y = response->center_y;
 
   if (latest_depth_) {
     try {
@@ -208,80 +210,121 @@ BT::NodeStatus DetectObject::onRunning()
         latest_depth_,
         sensor_msgs::image_encodings::TYPE_32FC1);
 
-      std::vector<float> depth_samples;
+      // Structure to hold depth samples with their pixel coordinates
+      struct DepthSample {
+        float depth;
+        int x;
+        int y;
+      };
+      std::vector<DepthSample> depth_samples;
 
-      // Check if we have a segmentation mask
-      if (!response->mask.empty() && response->mask_height > 0 && response->mask_width > 0) {
-        // Sample depth only from masked pixels (the actual object)
+      // Sample depth from bounding box
+      if (response->bbox.size() >= 4) {
+        int x1 = static_cast<int>(response->bbox[0]);
+        int y1 = static_cast<int>(response->bbox[1]);
+        int x2 = static_cast<int>(response->bbox[2]);
+        int y2 = static_cast<int>(response->bbox[3]);
+
+        // Clamp to image bounds
+        x1 = std::max(0, std::min(x1, depth_ptr->image.cols - 1));
+        y1 = std::max(0, std::min(y1, depth_ptr->image.rows - 1));
+        x2 = std::max(0, std::min(x2, depth_ptr->image.cols - 1));
+        y2 = std::max(0, std::min(y2, depth_ptr->image.rows - 1));
+
+        // Sample from inner region of bounding box (80% center area to avoid edges)
+        int margin_x = (x2 - x1) * 0.10;
+        int margin_y = (y2 - y1) * 0.10;
+        int inner_x1 = x1 + margin_x;
+        int inner_y1 = y1 + margin_y;
+        int inner_x2 = x2 - margin_x;
+        int inner_y2 = y2 - margin_y;
+
         RCLCPP_INFO(
           node_->get_logger(),
-          "Using segmentation mask (%dx%d) for depth sampling",
-          response->mask_width, response->mask_height);
+          "Sampling depth from bounding box (%d,%d)-(%d,%d), inner region (%d,%d)-(%d,%d)",
+          x1, y1, x2, y2, inner_x1, inner_y1, inner_x2, inner_y2);
 
-        // Ensure mask dimensions match depth image
-        if (response->mask_height != depth_ptr->image.rows || 
-            response->mask_width != depth_ptr->image.cols) {
+        // Sample every few pixels for efficiency
+        int sample_stride = 2;
+        for (int y = inner_y1; y <= inner_y2; y += sample_stride) {
+          for (int x = inner_x1; x <= inner_x2; x += sample_stride) {
+            float d = depth_ptr->image.at<float>(y, x);
+            if (!std::isnan(d) && d > 0.1 && d < 10.0) {
+              depth_samples.push_back({d, x, y});
+            }
+          }
+        }
+      }
+
+      if (!depth_samples.empty()) {
+        // Sort by depth to find the closest cluster (the actual object, not background)
+        std::sort(depth_samples.begin(), depth_samples.end(),
+          [](const DepthSample& a, const DepthSample& b) { return a.depth < b.depth; });
+
+        float min_depth = depth_samples.front().depth;
+        float max_depth = depth_samples.back().depth;
+        float depth_range = max_depth - min_depth;
+
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "Sampled %zu depth points, range: %.2f - %.2fm (span: %.2fm)",
+          depth_samples.size(), min_depth, max_depth, depth_range);
+
+        // Use depth clustering: object is the closest surface
+        // Accept points within a tolerance of the minimum depth
+        // Use adaptive threshold based on depth (closer objects need tighter threshold)
+        float depth_tolerance = std::max(0.05f, min_depth * 0.15f);  // 15% of min depth, at least 5cm
+        
+        // If depth range is small, object fills the bbox - use all samples
+        if (depth_range < 0.3) {
+          depth_tolerance = depth_range + 0.05f;
+        }
+
+        // Collect object samples (closest cluster) and compute weighted centroid
+        std::vector<DepthSample> object_samples;
+        double sum_x = 0.0, sum_y = 0.0, sum_weight = 0.0;
+        
+        for (const auto& sample : depth_samples) {
+          if (sample.depth <= min_depth + depth_tolerance) {
+            object_samples.push_back(sample);
+            // Weight by inverse depth (closer = more important) to emphasize front surface
+            double weight = 1.0 / sample.depth;
+            sum_x += sample.x * weight;
+            sum_y += sample.y * weight;
+            sum_weight += weight;
+          }
+        }
+
+        if (!object_samples.empty() && sum_weight > 0) {
+          // Compute depth-weighted centroid
+          refined_center_x = static_cast<float>(sum_x / sum_weight);
+          refined_center_y = static_cast<float>(sum_y / sum_weight);
+
+          // Use median of object samples for robust depth
+          std::sort(object_samples.begin(), object_samples.end(),
+            [](const DepthSample& a, const DepthSample& b) { return a.depth < b.depth; });
+          depth = object_samples[object_samples.size() / 2].depth;
+
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "Object cluster: %zu/%zu samples within %.2fm of min depth",
+            object_samples.size(), depth_samples.size(), depth_tolerance);
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "Refined center: (%.1f, %.1f) -> (%.1f, %.1f), depth: %.2fm",
+            response->center_x, response->center_y, refined_center_x, refined_center_y, depth);
+        } else {
+          // Fallback to 25th percentile (front quarter of samples)
+          size_t idx = depth_samples.size() / 4;
+          depth = depth_samples[idx].depth;
           RCLCPP_WARN(
             node_->get_logger(),
-            "Mask size (%dx%d) doesn't match depth image (%dx%d), falling back to bbox",
-            response->mask_width, response->mask_height,
-            depth_ptr->image.cols, depth_ptr->image.rows);
-        } else {
-          // Sample all masked pixels
-          int sample_stride = 2;  // Sample every 2nd pixel for efficiency
-          for (int y = 0; y < depth_ptr->image.rows; y += sample_stride) {
-            for (int x = 0; x < depth_ptr->image.cols; x += sample_stride) {
-              int mask_idx = y * response->mask_width + x;
-              if (mask_idx < static_cast<int>(response->mask.size()) && response->mask[mask_idx] > 0) {
-                float d = depth_ptr->image.at<float>(y, x);
-                if (!std::isnan(d) && d > 0.1 && d < 10.0) {
-                  depth_samples.push_back(d);
-                }
-              }
-            }
-          }
+            "No object cluster found, using 25th percentile depth: %.2fm", depth);
         }
-      }
-
-      // Fallback to bounding box if mask sampling failed
-      if (depth_samples.empty() && response->bbox.size() >= 4) {
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "Mask sampling failed or unavailable, using bounding box center");
-
-        int cx = static_cast<int>(response->center_x);
-        int cy = static_cast<int>(response->center_y);
-        int radius = 5;  // Sample 5-pixel radius around center
-
-        for (int dy = -radius; dy <= radius; dy++) {
-          for (int dx = -radius; dx <= radius; dx++) {
-            int x = cx + dx;
-            int y = cy + dy;
-            if (x >= 0 && x < depth_ptr->image.cols && y >= 0 && y < depth_ptr->image.rows) {
-              float d = depth_ptr->image.at<float>(y, x);
-              if (!std::isnan(d) && d > 0.1 && d < 10.0) {
-                depth_samples.push_back(d);
-              }
-            }
-          }
-        }
-      }
-
-      // Use median of masked pixels (more robust than minimum for mask-based sampling)
-      if (!depth_samples.empty()) {
-        std::sort(depth_samples.begin(), depth_samples.end());
-        
-        // Use median for mask-based sampling (already filtered to object only)
-        depth = depth_samples[depth_samples.size() / 2];
-
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "Sampled %zu depth points from mask, median: %.2fm (range: %.2f - %.2fm)",
-          depth_samples.size(), depth, depth_samples.front(), depth_samples.back());
       } else {
         RCLCPP_WARN(
           node_->get_logger(),
-          "No valid depth samples available, using default 1.5m");
+          "No valid depth samples from bounding box, using default 1.5m");
       }
 
     } catch (const std::exception & e) {
@@ -298,37 +341,24 @@ BT::NodeStatus DetectObject::onRunning()
   // Use camera optical frame for pose estimation
   std::string camera_frame = "camera_rgb_optical_frame";
 
+  geometry_msgs::msg::PoseStamped object_pose;
   geometry_msgs::msg::PoseStamped target_pose = pixelToPose(
-    response->center_x,
-    response->center_y,
+    refined_center_x,
+    refined_center_y,
     depth,
-    camera_frame);
-
-  // Compute actual object pose (before approach offset was applied)
-  // The pixelToPose function modifies the position to be 0.25m back from the object
-  // We need to recompute the actual object location for manipulation
-  geometry_msgs::msg::PoseStamped object_pose = target_pose;
-  
-  // Extract the approach pose components
-  double approach_x = target_pose.pose.position.x;
-  double approach_y = target_pose.pose.position.y;
-  
-  // Calculate the actual object position (0.25m forward from approach pose)
-  double yaw = std::atan2(approach_y, approach_x);
-  object_pose.pose.position.x = approach_x + 0.25 * std::cos(yaw);
-  object_pose.pose.position.y = approach_y + 0.25 * std::sin(yaw);
-  object_pose.pose.position.z = 0.0;  // Ground plane
-  
-  // Object orientation faces same direction as approach pose
-  object_pose.pose.orientation = target_pose.pose.orientation;
+    camera_frame,
+    object_pose);
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "Detected '%s' at pixel (%.1f, %.1f), depth %.2fm -> approach (%.2f, %.2f), object (%.2f, %.2f) in map (conf: %.2f)",
+    "Detected '%s' at bbox center (%.1f, %.1f) -> refined (%.1f, %.1f), depth %.2fm",
     response->phrase.c_str(),
-    response->center_x,
-    response->center_y,
-    depth,
+    response->center_x, response->center_y,
+    refined_center_x, refined_center_y,
+    depth);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Poses in map: approach (%.2f, %.2f), object (%.2f, %.2f) (conf: %.2f)",
     target_pose.pose.position.x,
     target_pose.pose.position.y,
     object_pose.pose.position.x,
@@ -387,7 +417,8 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
   float center_x,
   float center_y,
   float depth_value,
-  const std::string & frame_id)
+  const std::string & frame_id,
+  geometry_msgs::msg::PoseStamped & object_pose_out)
 {
   // Pinhole camera model: pixel to 3D point in optical frame
   // Optical frame: +X=right, +Y=down, +Z=forward
@@ -416,34 +447,85 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
       "map",
       tf2::durationFromSec(1.0));
 
-    // Project to ground plane (z=0 for 2D navigation)
-    pose_map.pose.position.z = 0.0;
-
-    // Calculate orientation: point toward object from approach position
-    // Apply 0.25m approach offset along the direction to the object
+    // Store original object position (before applying approach offset)
     double obj_x = pose_map.pose.position.x;
     double obj_y = pose_map.pose.position.y;
-    double distance = std::sqrt(obj_x * obj_x + obj_y * obj_y);
     
-    if (distance > 0.25) {
-      // Move goal 0.25m back from object (arm reach ~0.38m)
-      double scale = (distance - 0.25) / distance;
-      pose_map.pose.position.x = obj_x * scale;
-      pose_map.pose.position.y = obj_y * scale;
+    // Get robot's current position in map frame
+    geometry_msgs::msg::TransformStamped robot_transform;
+    double robot_x = 0.0, robot_y = 0.0;
+    try {
+      robot_transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+      robot_x = robot_transform.transform.translation.x;
+      robot_y = robot_transform.transform.translation.y;
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "Robot position in map: (%.2f, %.2f)", robot_x, robot_y);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "Could not get robot position, using map origin: %s", ex.what());
+    }
+    
+    // Calculate direction vector from robot to object
+    double dx = obj_x - robot_x;
+    double dy = obj_y - robot_y;
+    double distance_to_object = std::sqrt(dx * dx + dy * dy);
+    
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Object at (%.2f, %.2f), distance from robot: %.2fm",
+      obj_x, obj_y, distance_to_object);
+    
+    // Set the actual object pose output (for manipulation)
+    // Keep in map frame - the manipulator service will transform to arm frame at pick time
+    object_pose_out.header = pose_map.header;
+    object_pose_out.pose.position.x = obj_x;
+    object_pose_out.pose.position.y = obj_y;
+    object_pose_out.pose.position.z = pose_map.pose.position.z;
+    
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Object pose for manipulation (map): (%.2f, %.2f, %.2f)",
+      obj_x, obj_y, pose_map.pose.position.z);
+    
+    // Calculate orientation: face toward object from robot position
+    double yaw = std::atan2(dy, dx);
+    tf2::Quaternion q;
+    q.setRPY(0, 0, yaw);
+    object_pose_out.pose.orientation.x = q.x();
+    object_pose_out.pose.orientation.y = q.y();
+    object_pose_out.pose.orientation.z = q.z();
+    object_pose_out.pose.orientation.w = q.w();
+
+    // Calculate approach pose (for navigation) - offset back from object along robot->object line
+    // Project to ground plane (z=0 for 2D navigation)
+    pose_map.pose.position.z = 0.0;
+    
+    // Nav2 has xy_goal_tolerance of 0.25m, so it may stop short of the goal.
+    // Set goal at object position - Nav2 will stop when within tolerance,
+    // which should put the robot close enough for the arm to reach.
+    // The arm reach is ~0.35m, so stopping 0.20-0.25m away should work.
+    const double approach_offset = 0.0;  // Navigate directly to object position
+    
+    if (distance_to_object > approach_offset) {
+      // Normalize direction vector and place goal close to object
+      double unit_dx = dx / distance_to_object;
+      double unit_dy = dy / distance_to_object;
+      pose_map.pose.position.x = obj_x - unit_dx * approach_offset;
+      pose_map.pose.position.y = obj_y - unit_dy * approach_offset;
+    } else {
+      // Already very close, just use object position
+      pose_map.pose.position.x = obj_x;
+      pose_map.pose.position.y = obj_y;
     }
 
     // Face toward object
-    double yaw = std::atan2(obj_y, obj_x);
-    tf2::Quaternion q;
-    q.setRPY(0, 0, yaw);
-    pose_map.pose.orientation.x = q.x();
-    pose_map.pose.orientation.y = q.y();
-    pose_map.pose.orientation.z = q.z();
-    pose_map.pose.orientation.w = q.w();
+    pose_map.pose.orientation = object_pose_out.pose.orientation;
 
     RCLCPP_INFO(
       node_->get_logger(),
-      "Navigation goal: (%.2f, %.2f) in map, facing object at (%.2f, %.2f)",
+      "Navigation goal: (%.2f, %.2f) in map, object at (%.2f, %.2f)",
       pose_map.pose.position.x, pose_map.pose.position.y, obj_x, obj_y);
 
     return pose_map;
@@ -452,6 +534,7 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     RCLCPP_ERROR(
       node_->get_logger(),
       "TF transform failed: %s", ex.what());
+    object_pose_out = pose_camera;
     return pose_camera;
   }
 }

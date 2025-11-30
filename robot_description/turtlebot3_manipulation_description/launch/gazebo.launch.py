@@ -4,8 +4,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
-from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, Command
+from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import LaunchConfiguration, Command, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -28,6 +28,7 @@ def generate_launch_description():
     world_file_arg = LaunchConfiguration('world')
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
+    headless = LaunchConfiguration('headless')
 
     # Declare launch arguments
     declare_use_sim_time_cmd = DeclareLaunchArgument(
@@ -60,7 +61,13 @@ def generate_launch_description():
         description='Initial y position of the robot'
     )
 
-    # Start Gazebo Harmonic in headless mode to avoid rendering segfaults in containers
+    declare_headless_cmd = DeclareLaunchArgument(
+        'headless',
+        default_value='true',
+        description='Run Gazebo in headless mode (no GUI)'
+    )
+
+    # Start Gazebo Harmonic - headless or with GUI based on parameter
     env_vars = {
         'GZ_SIM_RESOURCE_PATH': gz_resource_path,
         'IGN_GAZEBO_RESOURCE_PATH': gz_resource_path,
@@ -71,8 +78,17 @@ def generate_launch_description():
     }
     
     # Run headless (no GUI) with -s (server only) flag
-    start_gazebo_cmd = ExecuteProcess(
+    start_gazebo_headless_cmd = ExecuteProcess(
+        condition=IfCondition(headless),
         cmd=['gz', 'sim', '-r', '-s', '-v', '4', world_file_arg],
+        output='screen',
+        additional_env=env_vars
+    )
+
+    # Run with GUI (no -s flag)
+    start_gazebo_gui_cmd = ExecuteProcess(
+        condition=UnlessCondition(headless),
+        cmd=['gz', 'sim', '-r', '-v', '4', world_file_arg],
         output='screen',
         additional_env=env_vars
     )
@@ -269,9 +285,11 @@ def generate_launch_description():
     ld.add_action(declare_world_cmd)
     ld.add_action(declare_x_pose_cmd)
     ld.add_action(declare_y_pose_cmd)
+    ld.add_action(declare_headless_cmd)
 
     # Add nodes
-    ld.add_action(start_gazebo_cmd)
+    ld.add_action(start_gazebo_headless_cmd)
+    ld.add_action(start_gazebo_gui_cmd)
     ld.add_action(robot_state_publisher_cmd)
     ld.add_action(bridge_clock_cmd)
     ld.add_action(bridge_sensors_cmd)
