@@ -1,1 +1,34 @@
-Actions: [ComputePathToPose (parameters: goal, path, planner_id), FollowPath (parameters: path, controller_id), SpinLeft (parameters: spin_dist), SpinRight (parameters: spin_dist), DriveOnHeading (parameters: dist_to_travel, speed), BackUp (parameters: backup_dist, backup_speed), Wait (parameters: wait_duration), DetectObject (parameters: object_description, target_pose, object_pose, object_height, object_width), PickObject (parameters: target_pose, object_height, object_width), PlaceObject (parameters: target_pose)]
+Actions:
+- ComputePathToPose (goal, path, planner_id)
+- FollowPath (path, controller_id)
+- SpinLeft (spin_dist, time_allowance)
+- SpinRight (spin_dist, time_allowance)
+- DriveOnHeading (dist_to_travel, speed, time_allowance)
+- BackUp (backup_dist, backup_speed, time_allowance)
+- Wait (wait_duration)
+- DetectObject (object_description, target_pose, object_pose, object_height, object_width)
+- PickObject (target_pose, object_height, object_width)
+- PlaceObject (target_pose)
+- ClearEntireCostmap (costmap)
+
+Control Nodes:
+- Sequence: Execute all children in order
+- Fallback: Try children until one succeeds
+- ReactiveSequence: Re-evaluate from first child each tick
+- ReactiveFallback: Re-evaluate from first child each tick
+- Parallel: Execute children simultaneously
+
+Decorator Nodes:
+- Inverter: Invert child result
+- Repeat (num_cycles): Repeat child N times
+- RetryUntilSuccessful (num_attempts): Retry child until success
+- ForceSuccess: Always return SUCCESS
+- ForceFailure: Always return FAILURE
+- KeepRunningUntilFailure: Keep running until child fails
+
+Condition Nodes:
+- GoalReached: Check if goal reached
+- IsStuck: Check if robot stuck
+- IsBatteryLow: Check battery level
+- TimeExpired (seconds): Check if time exceeded
+- DistanceTraveled (distance): Check distance moved

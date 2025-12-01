@@ -3,21 +3,28 @@ import xml.etree.ElementTree as ET
 from typing import Tuple, Optional
 
 
-CONTROL_NODES = ["Sequence", "Fallback"]
+CONTROL_NODES = ["Sequence", "Fallback", "Parallel", "ReactiveSequence", "ReactiveFallback"]
+
+DECORATOR_NODES = ["Inverter", "ForceSuccess", "ForceFailure", "Repeat", "RetryUntilSuccessful", "KeepRunningUntilFailure", "RateController"]
+
+CONDITION_NODES = ["GoalReached", "IsStuck", "IsBatteryLow", "GoalUpdated", "TimeExpired", "DistanceTraveled"]
 
 ACTION_NODES = [
     "ComputePathToPose",
     "FollowPath",
+    "NavigateToPose",
     "SpinLeft",
     "SpinRight",
     "BackUp",
+    "DriveOnHeading",
     "Wait",
     "DetectObject",
     "PickObject",
     "PlaceObject",
+    "ClearEntireCostmap",
 ]
 
-ALL_VALID_NODES = CONTROL_NODES + ACTION_NODES
+ALL_VALID_NODES = CONTROL_NODES + DECORATOR_NODES + CONDITION_NODES + ACTION_NODES
 
 
 def get_all_node_types():
@@ -48,30 +55,47 @@ def validate_bt_xml(xml_string: str, strict: bool = False) -> Tuple[bool, Option
         except ET.ParseError as e:
             return False, f"XML parse error: {str(e)}"
 
-        if root.tag != "root":
-            return False, f"Root element must be 'root', got '{root.tag}'"
+        # Support two formats:
+        # 1. Full document: <root BTCPP_format="4">...<BehaviorTree>...</BehaviorTree></root>
+        # 2. BehaviorTree only: <BehaviorTree>...</BehaviorTree>
+        
+        if root.tag == "root":
+            # Full document format
+            btcpp_format = root.get("BTCPP_format")
+            if btcpp_format != "4":
+                return False, f"BTCPP_format must be '4', got '{btcpp_format}'"
 
-        btcpp_format = root.get("BTCPP_format")
-        if btcpp_format != "4":
-            return False, f"BTCPP_format must be '4', got '{btcpp_format}'"
+            behavior_trees = root.findall("BehaviorTree")
+            if len(behavior_trees) == 0:
+                return False, "No BehaviorTree element found"
 
-        behavior_trees = root.findall("BehaviorTree")
-        if len(behavior_trees) == 0:
-            return False, "No BehaviorTree element found"
+            for bt in behavior_trees:
+                tree_id = bt.get("ID")
+                if not tree_id:
+                    return False, "BehaviorTree element missing ID attribute"
 
-        for bt in behavior_trees:
-            tree_id = bt.get("ID")
+                if len(list(bt)) == 0:
+                    return False, f"BehaviorTree '{tree_id}' is empty"
+
+            main_tree = root.get("main_tree_to_execute")
+            if main_tree:
+                tree_ids = [bt.get("ID") for bt in behavior_trees]
+                if main_tree not in tree_ids:
+                    return False, f"main_tree_to_execute '{main_tree}' not found in defined trees"
+                    
+        elif root.tag == "BehaviorTree":
+            # BehaviorTree only format (from finetuned model)
+            tree_id = root.get("ID")
             if not tree_id:
                 return False, "BehaviorTree element missing ID attribute"
-
-            if len(list(bt)) == 0:
+            
+            if len(list(root)) == 0:
                 return False, f"BehaviorTree '{tree_id}' is empty"
-
-        main_tree = root.get("main_tree_to_execute")
-        if main_tree:
-            tree_ids = [bt.get("ID") for bt in behavior_trees]
-            if main_tree not in tree_ids:
-                return False, f"main_tree_to_execute '{main_tree}' not found in defined trees"
+            
+            # For this format, behavior_trees is just the root element
+            behavior_trees = [root]
+        else:
+            return False, f"Root element must be 'root' or 'BehaviorTree', got '{root.tag}'"
 
         if strict:
             valid_nodes = set(get_all_node_types()) | {"BehaviorTree", "root"}

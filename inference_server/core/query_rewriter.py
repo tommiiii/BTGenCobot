@@ -26,6 +26,27 @@ Available Actions (use EXACT parameter names shown):
   * Uses object_pose from DetectObject (actual object location)
 - PlaceObject: [For placing objects with the manipulator]
   * Can use object_pose or a specified location
+- ClearEntireCostmap: costmap="global" or "local" [For clearing costmaps when stuck]
+
+Control Nodes (for complex behaviors):
+- Sequence: Execute children in order. All must succeed.
+- Fallback: Try children in order until one succeeds.
+- ReactiveSequence: Re-evaluates from first child each tick.
+- ReactiveFallback: Re-evaluates from first child each tick.
+- Parallel: Execute children simultaneously.
+
+Decorator Nodes (modify child behavior):
+- Inverter: Invert child result.
+- Repeat: num_cycles="N" - Repeat child N times.
+- RetryUntilSuccessful: num_attempts="N" - Retry child until success.
+- ForceSuccess: Always return SUCCESS.
+- KeepRunningUntilFailure: Keep running until child fails.
+
+Condition Nodes (check state):
+- GoalReached: Check if navigation goal reached.
+- IsStuck: Check if robot is stuck.
+- IsBatteryLow: Check battery level.
+- TimeExpired: seconds="N" - Check if time exceeded.
 
 CRITICAL:
 - Use these EXACT parameter names. Do NOT use variations like "angle", "spin_angle", "radians", etc.
@@ -46,10 +67,23 @@ Rules:
 7. List ONLY the actions needed
 8. CRITICAL: If the same action is used multiple times, list that action MULTIPLE times in the Actions line
 
-Output format (MUST start with Actions line):
-Actions: [All action instances needed, comma-separated, in execution order. List the same action MULTIPLE times if it's used multiple times]
+CONTROL FLOW RULES:
+9. For "if X fails, do Y" or "try X, otherwise Y": Use Structure: Fallback[X, Y]
+10. For "repeat N times": Use Structure: Repeat[action_sequence]
+11. For "keep trying until success": Use Structure: RetryUntilSuccessful[action]
+12. For "while not stuck, do X": Use Structure: ReactiveSequence[Inverter[IsStuck], X]
+13. For recovery behaviors: Use Fallback with main action and recovery sequence
 
-[Concise description mentioning specific parameter values for EACH action instance]
+Output format (MUST start with Actions or Structure line):
+
+For SIMPLE sequences (just actions in order):
+Actions: [All action instances needed, comma-separated, in execution order]
+[Concise description mentioning specific parameter values]
+
+For COMPLEX behaviors (requiring control structures):
+Structure: ControlNode[children...]
+Actions: [All unique actions used]
+[Concise description of the behavior tree structure and parameter values]
 
 Examples:
 - For "rotate left 90 degrees": "Actions: SpinLeft" (with spin_dist="1.57" for 90° left rotation)
@@ -61,7 +95,28 @@ Examples:
 - For "go to kitchen": "Actions: ComputePathToPose, FollowPath" (both needed for navigation to named location)
 - For "get closer to the red cup": "Actions: DetectObject, ComputePathToPose, FollowPath" (detect object, then navigate to it)
 - For "pick up red box": "Actions: DetectObject, ComputePathToPose, FollowPath, PickObject" (detect, navigate, pick)
-- For "place the cup on the table": "Actions: DetectObject, ComputePathToPose, FollowPath, PlaceObject" (detect table, navigate, place)"""
+- For "place the cup on the table": "Actions: DetectObject, ComputePathToPose, FollowPath, PlaceObject" (detect table, navigate, place)
+
+COMPLEX BEHAVIOR EXAMPLES:
+- For "navigate to kitchen, if stuck back up and try again":
+  Structure: Fallback[Sequence[ComputePathToPose, FollowPath], Sequence[BackUp, ComputePathToPose, FollowPath]]
+  Actions: ComputePathToPose, FollowPath, BackUp
+  Navigate to kitchen using path planning. If navigation fails, back up 0.5m at 0.1m/s, then retry navigation.
+
+- For "try to detect the cup 3 times":
+  Structure: RetryUntilSuccessful[DetectObject]
+  Actions: DetectObject
+  Retry detecting the cup up to 3 attempts (num_attempts="3").
+
+- For "patrol between kitchen and bedroom 5 times":
+  Structure: Repeat[Sequence[navigate_to_kitchen, navigate_to_bedroom]]
+  Actions: ComputePathToPose, FollowPath
+  Repeat patrol sequence 5 times (num_cycles="5"). Each cycle: navigate to kitchen, then navigate to bedroom.
+
+- For "search for the red ball by spinning":
+  Structure: Fallback[DetectObject, Sequence[SpinLeft, DetectObject]]
+  Actions: DetectObject, SpinLeft
+  Try to detect the red ball. If not found, spin left 180° and try detection again."""
 
 REWRITE_USER_TEMPLATE = """Transform this simple robot command into a detailed behavioral description:
 

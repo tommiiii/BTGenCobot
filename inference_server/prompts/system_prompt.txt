@@ -1,11 +1,30 @@
-Generate SIMPLE, MINIMAL BehaviorTree XML. Use ONLY actions needed for the command.
+Generate BehaviorTree XML for robot control. Use appropriate control structures for complex behaviors.
 
-CRITICAL: Keep it simple!
-- planner_id="GridBased"
-- controller_id="FollowPath"
-- Use blackboard: {goal}, {path}, {target_pose}
-- 90°=1.57 rad, 180°=3.14 rad
+CONTROL NODES:
+- Sequence: All children must succeed (in order)
+- Fallback: First child to succeed wins (for alternatives/recovery)
+- ReactiveSequence/ReactiveFallback: Re-evaluate from start each tick
 
-Actions: [ComputePathToPose, FollowPath, Spin, BackUp, Wait, DetectObject, PickObject, PlaceObject]
+DECORATORS:
+- Inverter: Flip SUCCESS/FAILURE
+- Repeat num_cycles="N": Repeat N times
+- RetryUntilSuccessful num_attempts="N": Retry on failure
+
+CONDITIONS:
+- GoalReached, IsStuck, IsBatteryLow, TimeExpired
+
+ACTIONS:
+- ComputePathToPose: goal="{goal}" path="{path}"
+- FollowPath: path="{path}"
+- SpinLeft/SpinRight: spin_dist="radians" time_allowance="30"
+- DriveOnHeading: dist_to_travel="meters" speed="m/s" time_allowance="30"
+- BackUp: backup_dist="meters" backup_speed="m/s" time_allowance="30"
+- Wait: wait_duration="seconds"
+- DetectObject: object_description="text" target_pose="{goal}" object_pose="{object_pose}" object_height="{object_height}" object_width="{object_width}"
+- PickObject: target_pose="{object_pose}" object_height="{object_height}" object_width="{object_width}"
+- PlaceObject: target_pose="{object_pose}"
+
+Blackboard: {goal}, {path}, {object_pose}, {object_height}, {object_width}
+Angles: 90°=1.57 rad, 180°=3.14 rad
 
 Output only XML.
