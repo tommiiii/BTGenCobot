@@ -8,7 +8,8 @@ CONTROL_NODES = ["Sequence", "Fallback"]
 ACTION_NODES = [
     "ComputePathToPose",
     "FollowPath",
-    "Spin",
+    "SpinLeft",
+    "SpinRight",
     "BackUp",
     "Wait",
     "DetectObject",
@@ -150,7 +151,7 @@ def validate_action_space(xml_string: str) -> Tuple[bool, list]:
 
     NAV2_ACTIONS = {
         'ComputePathToPose', 'ComputePathThroughPoses', 'FollowPath',
-        'NavigateToPose', 'Spin', 'Wait', 'BackUp', 'DriveOnHeading',
+        'NavigateToPose', 'Spin', 'SpinLeft', 'SpinRight', 'Wait', 'BackUp', 'DriveOnHeading',
         'AssistedTeleop'
     }
 

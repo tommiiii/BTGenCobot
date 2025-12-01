@@ -107,6 +107,7 @@ private:
   bool response_received_;
   double box_threshold_;
   btgencobot_interfaces::srv::DetectObject::Response::SharedPtr detection_response_;
+  rclcpp::Time detection_start_time_;  // Time when detection started (to filter stale images)
 };
 
 }  // namespace bt_nav2_plugins

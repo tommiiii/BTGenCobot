@@ -10,7 +10,8 @@ AVAILABLE_ACTIONS = """
 Available Actions (use EXACT parameter names shown):
 - ComputePathToPose: goal="{goal}", path="{path}", planner_id="GridBased" [For navigation to NAMED LOCATIONS like "kitchen", "bedroom"]
 - FollowPath: path="{path}", controller_id="FollowPath" [Always follows ComputePathToPose]
-- Spin: spin_dist="X.XX" (RADIANS: left/CCW=POSITIVE, right/CW=NEGATIVE. Examples: 1.57=90°left, -1.57=90°right, 3.14=180°left, -3.14=180°right) [For rotation in place]
+- SpinLeft: spin_dist="X.XX" (RADIANS, always POSITIVE. Examples: 1.57=90°, 3.14=180°) [For LEFT/COUNTERCLOCKWISE rotation]
+- SpinRight: spin_dist="X.XX" (RADIANS, always POSITIVE. Examples: 1.57=90°, 3.14=180°) [For RIGHT/CLOCKWISE rotation]
 - DriveOnHeading: dist_to_travel="X.X", speed="X.X"
   * dist_to_travel is ALWAYS POSITIVE for forward movement
   * Example: dist_to_travel="2.0", speed="0.2" for moving forward 2 meters
@@ -37,7 +38,7 @@ REWRITE_SYSTEM_PROMPT = f"""Transform simple robot commands into detailed behavi
 
 Rules:
 1. Mention exact parameter VALUES in the description (not just names)
-2. ROTATION DIRECTION: Left/CCW = POSITIVE spin_dist, Right/CW = NEGATIVE spin_dist (MUST include minus sign for right turns!)
+2. ROTATION DIRECTION: Use SpinLeft for left/counterclockwise rotation, SpinRight for right/clockwise rotation
 3. For navigating to NAMED locations (e.g., "kitchen", "bedroom"): List BOTH ComputePathToPose AND FollowPath
 4. For navigating to DETECTED OBJECTS (e.g., "red cup", "blue box"): List DetectObject, ComputePathToPose, FollowPath (and PickObject/PlaceObject if needed)
 5. For blind forward movement by distance (no target): Use DriveOnHeading
@@ -51,12 +52,12 @@ Actions: [All action instances needed, comma-separated, in execution order. List
 [Concise description mentioning specific parameter values for EACH action instance]
 
 Examples:
-- For "rotate left 90 degrees": "Actions: Spin" (with POSITIVE spin_dist="1.57" for counterclockwise/left rotation)
-- For "rotate right 90 degrees": "Actions: Spin" (with NEGATIVE spin_dist="-1.57" for clockwise/right rotation - note the minus sign!)
+- For "rotate left 90 degrees": "Actions: SpinLeft" (with spin_dist="1.57" for 90° left rotation)
+- For "rotate right 90 degrees": "Actions: SpinRight" (with spin_dist="1.57" for 90° right rotation)
 - For "move forward 2m": "Actions: DriveOnHeading" (with dist_to_travel="2.0", speed="0.2")
 - For "move backward 1m": "Actions: BackUp" (with backup_dist="1.0", backup_speed="0.1")
-- For "turn right then turn left": "Actions: Spin, Spin" (TWO Spin actions - first with NEGATIVE spin_dist="-1.57" for right, second with POSITIVE spin_dist="1.57" for left)
-- For "turn around 180 degrees": "Actions: Spin" (with spin_dist="3.14" or spin_dist="-3.14" depending on which direction)
+- For "turn right then turn left": "Actions: SpinRight, SpinLeft" (first SpinRight with spin_dist="1.57", then SpinLeft with spin_dist="1.57")
+- For "turn around 180 degrees": "Actions: SpinLeft" (with spin_dist="3.14") or "Actions: SpinRight" (with spin_dist="3.14")
 - For "go to kitchen": "Actions: ComputePathToPose, FollowPath" (both needed for navigation to named location)
 - For "get closer to the red cup": "Actions: DetectObject, ComputePathToPose, FollowPath" (detect object, then navigate to it)
 - For "pick up red box": "Actions: DetectObject, ComputePathToPose, FollowPath, PickObject" (detect, navigate, pick)

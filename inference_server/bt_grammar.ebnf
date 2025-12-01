@@ -26,14 +26,15 @@ simple_parallel: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? action_list 
 action_list: action_node (WS? action_node)*
 
 // Action nodes (always self-closing)
-// Spin listed first to reduce bias, then others alphabetically
-action_node: spin | drive_on_heading | backup | detect_obj | pick_obj | place_obj | wait | compute_path | follow_path
+// SpinLeft/SpinRight listed first to reduce bias, then others alphabetically
+action_node: spin_left | spin_right | drive_on_heading | backup | detect_obj | pick_obj | place_obj | wait | compute_path | follow_path
 
 // Action nodes with mandatory and optional attributes (no duplicates allowed)
 // Format: required attributes first, then optional ones in fixed order
 compute_path: "<ComputePathToPose" " " goal_attr " " path_attr (" " planner_id_attr)? (" " name_attr)? " "? "/>"
 follow_path: "<FollowPath" " " path_attr (" " controller_id_attr)? (" " name_attr)? " "? "/>"
-spin: "<Spin" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
+spin_left: "<SpinLeft" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
+spin_right: "<SpinRight" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
 drive_on_heading: "<DriveOnHeading" " " dist_to_travel_attr " " speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
 backup: "<BackUp" " " backup_dist_attr " " backup_speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
 wait: "<Wait" " " wait_duration_attr (" " name_attr)? " "? "/>"
@@ -46,7 +47,7 @@ goal_attr: "goal" " "? "=" " "? "\"" goal_var "\""
 path_attr: "path" " "? "=" " "? "\"" path_var "\""
 planner_id_attr: "planner_id" " "? "=" " "? "\"" att_value_content "\""
 controller_id_attr: "controller_id" " "? "=" " "? "\"" att_value_content "\""
-spin_dist_attr: "spin_dist" " "? "=" " "? "\"" "-"? numeric_value "\""
+spin_dist_attr: "spin_dist" " "? "=" " "? "\"" numeric_value "\""
 dist_to_travel_attr: "dist_to_travel" " "? "=" " "? "\"" numeric_value "\""
 speed_attr: "speed" " "? "=" " "? "\"" numeric_value "\""
 backup_dist_attr: "backup_dist" " "? "=" " "? "\"" numeric_value "\""

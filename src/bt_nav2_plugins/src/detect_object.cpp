@@ -89,6 +89,14 @@ BT::NodeStatus DetectObject::onStart()
   latest_depth_.reset();
   has_camera_info_ = false;
   
+  // Record the time when detection started - we'll only use images captured after this
+  detection_start_time_ = node_->now();
+  
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Detection start time: %.3f - will wait for fresh image",
+    detection_start_time_.seconds());
+  
   // Log subscription status
   RCLCPP_INFO(
     node_->get_logger(),
@@ -111,6 +119,22 @@ BT::NodeStatus DetectObject::onRunning()
       *node_->get_clock(),
       1000,
       "Waiting for camera image...");
+    return BT::NodeStatus::RUNNING;
+  }
+  
+  // Check if the image is fresh (captured after detection started)
+  // This ensures we don't use stale images from before a spin action completed
+  rclcpp::Time image_time(latest_image_->header.stamp);
+  if (image_time < detection_start_time_) {
+    RCLCPP_INFO_THROTTLE(
+      node_->get_logger(),
+      *node_->get_clock(),
+      500,
+      "Discarding stale image (%.3f < %.3f), waiting for fresh image...",
+      image_time.seconds(),
+      detection_start_time_.seconds());
+    latest_image_.reset();
+    latest_depth_.reset();
     return BT::NodeStatus::RUNNING;
   }
 

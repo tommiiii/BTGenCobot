@@ -17,4 +17,16 @@
       Requires target_pose input parameter.
     </description>
   </class>
+  <class name="SpinLeft" type="bt_nav2_plugins::SpinLeft" base_class_type="BT::ActionNodeBase">
+    <description>
+      Spin the robot left (counterclockwise) by a specified angle.
+      Input: spin_dist (radians, positive), time_allowance (seconds).
+    </description>
+  </class>
+  <class name="SpinRight" type="bt_nav2_plugins::SpinRight" base_class_type="BT::ActionNodeBase">
+    <description>
+      Spin the robot right (clockwise) by a specified angle.
+      Input: spin_dist (radians, positive), time_allowance (seconds).
+    </description>
+  </class>
 </library>

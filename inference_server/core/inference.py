@@ -23,7 +23,8 @@ def generate_restricted_grammar(allowed_actions: List[str]) -> str:
     action_rules = {
         "ComputePathToPose": 'compute_path: "<ComputePathToPose" " " goal_attr " " path_attr (" " planner_id_attr)? (" " name_attr)? " "? "/>"',
         "FollowPath": 'follow_path: "<FollowPath" " " path_attr (" " controller_id_attr)? (" " name_attr)? " "? "/>"',
-        "Spin": 'spin: "<Spin" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
+        "SpinLeft": 'spin_left: "<SpinLeft" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
+        "SpinRight": 'spin_right: "<SpinRight" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
         "DriveOnHeading": 'drive_on_heading: "<DriveOnHeading" " " dist_to_travel_attr " " speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
         "BackUp": 'backup: "<BackUp" " " backup_dist_attr " " backup_speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
         "Wait": 'wait: "<Wait" " " wait_duration_attr (" " name_attr)? " "? "/>"',
@@ -36,7 +37,8 @@ def generate_restricted_grammar(allowed_actions: List[str]) -> str:
     action_rule_names = {
         "ComputePathToPose": "compute_path",
         "FollowPath": "follow_path",
-        "Spin": "spin",
+        "SpinLeft": "spin_left",
+        "SpinRight": "spin_right",
         "DriveOnHeading": "drive_on_heading",
         "BackUp": "backup",
         "Wait": "wait",
@@ -113,7 +115,7 @@ goal_attr: "goal" " "? "=" " "? "\"" goal_var "\""
 path_attr: "path" " "? "=" " "? "\"" path_var "\""
 planner_id_attr: "planner_id" " "? "=" " "? "\"" att_value_content "\""
 controller_id_attr: "controller_id" " "? "=" " "? "\"" att_value_content "\""
-spin_dist_attr: "spin_dist" " "? "=" " "? "\"" "-"? numeric_value "\""
+spin_dist_attr: "spin_dist" " "? "=" " "? "\"" numeric_value "\""
 dist_to_travel_attr: "dist_to_travel" " "? "=" " "? "\"" numeric_value "\""
 speed_attr: "speed" " "? "=" " "? "\"" numeric_value "\""
 backup_dist_attr: "backup_dist" " "? "=" " "? "\"" numeric_value "\""

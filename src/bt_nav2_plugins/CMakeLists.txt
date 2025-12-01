@@ -9,6 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(behaviortree_cpp REQUIRED)
 find_package(nav2_behavior_tree REQUIRED)
+find_package(nav2_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -23,6 +24,8 @@ add_library(bt_nav2_plugins SHARED
   src/detect_object.cpp
   src/pick_object.cpp
   src/place_object.cpp
+  src/spin_left.cpp
+  src/spin_right.cpp
   src/plugin_registration.cpp
 )
 
@@ -35,6 +38,7 @@ target_include_directories(bt_nav2_plugins PUBLIC
 ament_target_dependencies(bt_nav2_plugins
   behaviortree_cpp
   nav2_behavior_tree
+  nav2_msgs
   rclcpp
   sensor_msgs
   geometry_msgs
@@ -73,6 +77,7 @@ ament_export_libraries(
 ament_export_dependencies(
   behaviortree_cpp
   nav2_behavior_tree
+  nav2_msgs
   rclcpp
   sensor_msgs
   geometry_msgs
