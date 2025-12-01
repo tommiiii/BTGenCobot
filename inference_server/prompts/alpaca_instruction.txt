@@ -36,8 +36,10 @@ Parameter formats (use EXACT attribute names):
   * MANDATORY: Always use EXACTLY target_pose="{object_pose}"
 
 FULL PICK SEQUENCE EXAMPLE:
-Input: Actions: DetectObject, ComputePathToPose, FollowPath, PickObject
-Output: <BehaviorTree ID="BehaviorTree"><Sequence><DetectObject object_description="..." target_pose="{goal}" object_pose="{object_pose}" object_height="{object_height}" object_width="{object_width}"/><ComputePathToPose goal="{goal}" path="{path}"/><FollowPath path="{path}"/><PickObject target_pose="{object_pose}" object_height="{object_height}" object_width="{object_width}"/></Sequence></BehaviorTree>
+Input: Actions: DetectObject, ComputePathToPose, FollowPath, PickObject - detect and pick up the red cup
+Output: <BehaviorTree ID="BehaviorTree"><Sequence><DetectObject object_description="red cup" target_pose="{goal}" object_pose="{object_pose}" object_height="{object_height}" object_width="{object_width}"/><ComputePathToPose goal="{goal}" path="{path}"/><FollowPath path="{path}"/><PickObject target_pose="{object_pose}" object_height="{object_height}" object_width="{object_width}"/></Sequence></BehaviorTree>
+
+CRITICAL: The object_description attribute MUST contain the actual object name from the command (e.g., "yellow sphere", "blue box", "green bottle"). NEVER use "..." or placeholder text.
 
 CRITICAL FOR SPIN: When the input says spin_dist="-1.57" or mentions RIGHT/CLOCKWISE, you MUST output the minus sign in the XML.
 

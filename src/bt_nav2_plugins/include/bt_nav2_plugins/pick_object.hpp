@@ -3,7 +3,7 @@
 
 #include <string>
 #include <memory>
-#include <future>
+#include <atomic>
 
 #include "behaviortree_cpp/action_node.h"
 #include "rclcpp/rclcpp.hpp"
@@ -48,15 +48,23 @@ private:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
 
+  // Nav2's node for logging
   rclcpp::Node::SharedPtr node_;
+  
+  // Separate node for service calls - we spin this ourselves
+  rclcpp::Node::SharedPtr service_node_;
+  
   geometry_msgs::msg::PoseStamped target_pose_;
   double object_height_;
   double object_width_;
 
   // Service client for manipulator action
   rclcpp::Client<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr manipulator_client_;
-  std::shared_future<btgencobot_interfaces::srv::ManipulatorAction::Response::SharedPtr> future_result_;
-  bool service_call_sent_;
+  
+  // Callback-based response handling
+  btgencobot_interfaces::srv::ManipulatorAction::Response::SharedPtr response_;
+  std::atomic<bool> service_call_sent_;
+  std::atomic<bool> response_received_;
 };
 
 }  // namespace bt_nav2_plugins

@@ -182,17 +182,17 @@ class Florence2Service(Node):
             return self._detect_and_segment(image, request.object_description, request.box_threshold)
 
     def _detect_and_segment(self, image, text_prompt, box_threshold):
-        """Run Florence-2 detection with bounding box pose estimation"""
+        """Run Florence-2 open vocabulary detection (single-pass, no verification needed)"""
         try:
             # Convert to PIL Image
             pil_image = PILImage.fromarray(image)
             
-            # Use Florence-2's Caption to Phrase Grounding task
-            # This takes a text description and finds it in the image with bounding boxes
-            task_prompt = '<CAPTION_TO_PHRASE_GROUNDING>'
+            # Use Florence-2's Open Vocabulary Detection task
+            # This directly finds objects matching the text query in a single pass
+            task_prompt = '<OPEN_VOCABULARY_DETECTION>'
             prompt = task_prompt + text_prompt
             
-            self.get_logger().info(f'Using Florence-2 prompt: "{prompt}"')
+            self.get_logger().info(f'Using Florence-2 open vocabulary detection: "{text_prompt}"')
             
             # Prepare inputs
             inputs = self.florence2_processor(
@@ -236,7 +236,7 @@ class Florence2Service(Node):
 
             detection_data = parsed_answer[task_prompt]
             bboxes = detection_data.get('bboxes', [])
-            labels = detection_data.get('labels', [])
+            labels = detection_data.get('bboxes_labels', [])  # OVD uses 'bboxes_labels' key
 
             if len(bboxes) == 0:
                 return self._create_detection_result(
@@ -245,56 +245,30 @@ class Florence2Service(Node):
                 )
 
             # Store all detections for debug visualization
+            # No verification needed - OVD directly returns relevant matches
             all_detections = []
-            for i, (bbox, label) in enumerate(zip(bboxes, labels)):
-                # Only verify first detection for speed
-                if i >= 3:  # Check up to 3 detections
-                    continue
-                
+            for i, bbox in enumerate(bboxes):
                 x1, y1, x2, y2 = bbox
                 cx = (x1 + x2) / 2
                 cy = (y1 + y2) / 2
-                # Florence-2 doesn't provide confidence scores, use 1.0 for all
-                # Verify detection with caption
-                caption = self._verify_region_caption(pil_image, bbox)
-                self.get_logger().info(f"Region caption: {caption}")
-                
-                # Check if caption matches query
-                caption_lower = caption.lower()
-                query_words = set(text_prompt.lower().split())
-                caption_words = set(caption_lower.split())
-                matches = query_words & caption_words
-                match_score = len(matches) / len(query_words) if query_words else 0
-                
-                self.get_logger().info(f"Match score: {match_score:.2f}")
-                
-                # Skip if no match
-                if match_score < 0.5:
-                    self.get_logger().info(f"Skipping: score too low")
-                    continue
+                label = labels[i] if i < len(labels) else text_prompt
                 
                 all_detections.append({
                     'bbox': [float(x1), float(y1), float(x2), float(y2)],
                     'center_x': float(cx),
                     'center_y': float(cy),
-                    'confidence': 1.0,
-                    'phrase': label if label else text_prompt
+                    'confidence': 1.0,  # Florence-2 doesn't provide confidence scores
+                    'phrase': label
                 })
 
             self.get_logger().info(f'Found {len(all_detections)} detections')
             for i, det in enumerate(all_detections):
                 self.get_logger().info(f"  {i}: '{det['phrase']}' at ({det['center_x']:.1f}, {det['center_y']:.1f})")
 
-            # Select the first detection (Florence-2 should return the most relevant)
-            if len(all_detections) == 0:
-                return self._create_detection_result(
-                    detected=False,
-                    error=f"No objects found matching \"{text_prompt}\""
-                )
-            
+            # Select the first detection (Florence-2 returns most relevant first)
             selected_detection = all_detections[0]
 
-            # Use bounding box center for pose estimation (no SAM segmentation)
+            # Use bounding box center for pose estimation
             return self._create_detection_result(
                 detected=True,
                 confidence=selected_detection['confidence'],
@@ -335,54 +309,6 @@ class Florence2Service(Node):
             phrase=text_prompt
         )
 
-
-    def _verify_region_caption(self, pil_image, bbox):
-        """Get caption for a region to verify its contents"""
-        try:
-            x1, y1, x2, y2 = map(int, bbox)
-            pad = 10
-            x1 = max(0, x1 - pad)
-            y1 = max(0, y1 - pad)
-            x2 = min(pil_image.width, x2 + pad)
-            y2 = min(pil_image.height, y2 + pad)
-            
-            cropped = pil_image.crop((x1, y1, x2, y2))
-            
-            # Use faster CAPTION task
-            task = "<CAPTION>"
-            inputs = self.florence2_processor(
-                text=task,
-                images=cropped,
-                return_tensors="pt"
-            ).to(self.device, self.florence2_model.dtype)
-            
-            with torch.no_grad():
-                generated_ids = self.florence2_model.generate(
-                    input_ids=inputs["input_ids"],
-                    pixel_values=inputs["pixel_values"],
-                    max_new_tokens=512,  # Shorter for speed
-                    num_beams=1,
-                    use_cache=False,
-                    do_sample=False
-                )
-            
-            generated_text = self.florence2_processor.batch_decode(
-                generated_ids,
-                skip_special_tokens=False
-            )[0]
-            
-            parsed = self.florence2_processor.post_process_generation(
-                generated_text,
-                task=task,
-                image_size=(cropped.width, cropped.height)
-            )
-            
-            if task in parsed:
-                return parsed[task]
-            return ""
-        except Exception as e:
-            self.get_logger().warn(f"Region captioning failed: {e}")
-            return ""
 
     def _create_detection_result(self, detected=False, confidence=0.0, center_x=-1.0,
                                   center_y=-1.0, bbox=None, phrase='', error='', mask=None,

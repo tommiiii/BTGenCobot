@@ -11,15 +11,19 @@ PlaceObject::PlaceObject(
   const std::string & name,
   const BT::NodeConfiguration & config)
 : BT::StatefulActionNode(name, config),
-  service_call_sent_(false)
+  service_call_sent_(false),
+  response_received_(false)
 {
-  // Get ROS node from config
+  // Get ROS node from config (Nav2's node - used for logging)
   if (!config.blackboard->get("node", node_) || !node_) {
     throw BT::RuntimeError("PlaceObject: 'node' not found in blackboard");
   }
 
-  // Create service client
-  manipulator_client_ = node_->create_client<btgencobot_interfaces::srv::ManipulatorAction>(
+  // Create a separate node for service calls - we spin this ourselves
+  service_node_ = std::make_shared<rclcpp::Node>("place_object_service_node");
+
+  // Create service client on our own node
+  manipulator_client_ = service_node_->create_client<btgencobot_interfaces::srv::ManipulatorAction>(
     "/manipulator_action");
 
   RCLCPP_INFO(node_->get_logger(), "PlaceObject BT node initialized");
@@ -42,13 +46,20 @@ BT::NodeStatus PlaceObject::onStart()
     target_pose_.pose.position.y,
     target_pose_.pose.position.z);
 
+  // Reset state
   service_call_sent_ = false;
+  response_received_ = false;
+  response_.reset();
+
   return BT::NodeStatus::RUNNING;
 }
 
 BT::NodeStatus PlaceObject::onRunning()
 {
-  // Check if service is available
+  // Spin our service node to process callbacks
+  rclcpp::spin_some(service_node_);
+
+  // Check if service is available and send request
   if (!service_call_sent_) {
     if (!manipulator_client_->wait_for_service(0s)) {
       RCLCPP_WARN_THROTTLE(
@@ -66,14 +77,26 @@ BT::NodeStatus PlaceObject::onRunning()
 
     RCLCPP_INFO(node_->get_logger(), "PlaceObject: Sending place request to service...");
 
-    future_result_ = manipulator_client_->async_send_request(request).future.share();
+    // Send async request with callback
+    manipulator_client_->async_send_request(
+      request,
+      [this](rclcpp::Client<btgencobot_interfaces::srv::ManipulatorAction>::SharedFuture future) {
+        try {
+          response_ = future.get();
+          response_received_ = true;
+          RCLCPP_INFO(node_->get_logger(), "PlaceObject: Response received via callback");
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(node_->get_logger(), "PlaceObject: Service call failed: %s", e.what());
+          response_received_ = true;  // Mark as received so we can handle the error
+        }
+      });
     service_call_sent_ = true;
 
     return BT::NodeStatus::RUNNING;
   }
 
   // Check if service response is ready
-  if (future_result_.wait_for(0s) != std::future_status::ready) {
+  if (!response_received_) {
     RCLCPP_INFO_THROTTLE(
       node_->get_logger(),
       *node_->get_clock(),
@@ -82,17 +105,20 @@ BT::NodeStatus PlaceObject::onRunning()
     return BT::NodeStatus::RUNNING;
   }
 
-  // Get service response
-  auto response = future_result_.get();
+  // Check response
+  if (!response_) {
+    RCLCPP_ERROR(node_->get_logger(), "PlaceObject: Service returned null response");
+    return BT::NodeStatus::FAILURE;
+  }
 
-  if (response->success) {
+  if (response_->success) {
     RCLCPP_INFO(node_->get_logger(), "PlaceObject: Place operation completed successfully");
     return BT::NodeStatus::SUCCESS;
   } else {
     RCLCPP_ERROR(
       node_->get_logger(),
       "PlaceObject: Place operation failed: %s",
-      response->error_message.c_str());
+      response_->error_message.c_str());
     return BT::NodeStatus::FAILURE;
   }
 }
@@ -101,6 +127,8 @@ void PlaceObject::onHalted()
 {
   RCLCPP_INFO(node_->get_logger(), "PlaceObject: Halted");
   service_call_sent_ = false;
+  response_received_ = false;
+  response_.reset();
 }
 
 }  // namespace bt_nav2_plugins
