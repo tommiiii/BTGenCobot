@@ -1,21 +1,15 @@
-// BehaviorTree XML Grammar
-// Based on W3C XML 1.0 specification, adapted for Lark EBNF syntax
-// Supports nested control nodes with depth limit to prevent degenerate trees
+// BehaviorTree XML Grammar - Explicit Syntax
+// Uses <Action ID="NodeType" .../> format instead of <NodeType .../>
+// This matches the model's trained output format
 
-// Two possible start formats: full XML document or just BehaviorTree element
-start: full_document | behavior_tree_only
-
-// Full document with XML declaration
-full_document: xml_decl root
+// Start: full XML document with root element
+start: xml_decl root
 
 xml_decl: "<?xml" WS "version" WS? "=" WS? version_val "?>"
 version_val: "\"1.0\""
 
 root: "<root" " " "BTCPP_format=\"4\"" " " main_tree_attr ((" " | "\t") attribute)* " "? ">" WS? behavior_tree WS? "</root>"
 main_tree_attr: "main_tree_to_execute=\"" att_value_content "\""
-
-// BehaviorTree element only (matches finetuned model output)
-behavior_tree_only: behavior_tree
 
 behavior_tree: "<BehaviorTree" ((" " | "\t") attribute)* " "? ">" WS? bt_content WS? "</BehaviorTree>"
 
@@ -24,29 +18,21 @@ bt_content: node_l1
 
 // ============================================================================
 // DEPTH-LIMITED NODE HIERARCHY (5 levels max)
-// Each level can contain nodes from the next level down
 // ============================================================================
 
 // Level 1: Top-level node (inside BehaviorTree)
 node_l1: action_node | condition_node | control_l1 | decorator_l1
 
-// Level 2: Children of Level 1 control/decorator nodes
+// Level 2-5
 node_l2: action_node | condition_node | control_l2 | decorator_l2
-
-// Level 3: Children of Level 2 control/decorator nodes
 node_l3: action_node | condition_node | control_l3 | decorator_l3
-
-// Level 4: Children of Level 3 control/decorator nodes
 node_l4: action_node | condition_node | control_l4 | decorator_l4
-
-// Level 5: Leaf level - only actions and conditions (no more nesting)
 node_l5: action_node | condition_node
 
 // ============================================================================
 // CONTROL NODES AT EACH LEVEL
 // ============================================================================
 
-// Level 1 control nodes
 control_l1: sequence_l1 | fallback_l1 | parallel_l1 | reactive_seq_l1 | reactive_fb_l1
 sequence_l1: "<Sequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS? "</Sequence>"
 fallback_l1: "<Fallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS? "</Fallback>"
@@ -54,7 +40,6 @@ parallel_l1: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS?
 reactive_seq_l1: "<ReactiveSequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS? "</ReactiveSequence>"
 reactive_fb_l1: "<ReactiveFallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS? "</ReactiveFallback>"
 
-// Level 2 control nodes
 control_l2: sequence_l2 | fallback_l2 | parallel_l2 | reactive_seq_l2 | reactive_fb_l2
 sequence_l2: "<Sequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS? "</Sequence>"
 fallback_l2: "<Fallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS? "</Fallback>"
@@ -62,7 +47,6 @@ parallel_l2: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS?
 reactive_seq_l2: "<ReactiveSequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS? "</ReactiveSequence>"
 reactive_fb_l2: "<ReactiveFallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS? "</ReactiveFallback>"
 
-// Level 3 control nodes
 control_l3: sequence_l3 | fallback_l3 | parallel_l3 | reactive_seq_l3 | reactive_fb_l3
 sequence_l3: "<Sequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS? "</Sequence>"
 fallback_l3: "<Fallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS? "</Fallback>"
@@ -70,7 +54,6 @@ parallel_l3: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS?
 reactive_seq_l3: "<ReactiveSequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS? "</ReactiveSequence>"
 reactive_fb_l3: "<ReactiveFallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS? "</ReactiveFallback>"
 
-// Level 4 control nodes (children are leaf level)
 control_l4: sequence_l4 | fallback_l4 | parallel_l4 | reactive_seq_l4 | reactive_fb_l4
 sequence_l4: "<Sequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS? "</Sequence>"
 fallback_l4: "<Fallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS? "</Fallback>"
@@ -78,7 +61,6 @@ parallel_l4: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS?
 reactive_seq_l4: "<ReactiveSequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS? "</ReactiveSequence>"
 reactive_fb_l4: "<ReactiveFallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS? "</ReactiveFallback>"
 
-// Node lists at each level
 node_list_l2: node_l2 (WS? node_l2)*
 node_list_l3: node_l3 (WS? node_l3)*
 node_list_l4: node_l4 (WS? node_l4)*
@@ -88,125 +70,59 @@ node_list_l5: node_l5 (WS? node_l5)*
 // DECORATOR NODES AT EACH LEVEL
 // ============================================================================
 
-// Level 1 decorators
-decorator_l1: inverter_l1 | force_success_l1 | force_failure_l1 | repeat_l1 | retry_l1 | keep_running_l1 | rate_ctrl_l1
+decorator_l1: inverter_l1 | force_success_l1 | force_failure_l1 | repeat_l1 | retry_l1 | keep_running_l1
 inverter_l1: "<Inverter" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</Inverter>"
 force_success_l1: "<ForceSuccess" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</ForceSuccess>"
 force_failure_l1: "<ForceFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</ForceFailure>"
-repeat_l1: "<Repeat" " " num_cycles_attr ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</Repeat>"
-retry_l1: "<RetryUntilSuccessful" " " num_attempts_attr ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</RetryUntilSuccessful>"
+repeat_l1: "<Repeat" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</Repeat>"
+retry_l1: "<RetryUntilSuccessful" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</RetryUntilSuccessful>"
 keep_running_l1: "<KeepRunningUntilFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</KeepRunningUntilFailure>"
-rate_ctrl_l1: "<RateController" " " hz_attr ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</RateController>"
 
-// Level 2 decorators
-decorator_l2: inverter_l2 | force_success_l2 | force_failure_l2 | repeat_l2 | retry_l2 | keep_running_l2 | rate_ctrl_l2
+decorator_l2: inverter_l2 | force_success_l2 | force_failure_l2 | repeat_l2 | retry_l2 | keep_running_l2
 inverter_l2: "<Inverter" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</Inverter>"
 force_success_l2: "<ForceSuccess" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</ForceSuccess>"
 force_failure_l2: "<ForceFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</ForceFailure>"
-repeat_l2: "<Repeat" " " num_cycles_attr ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</Repeat>"
-retry_l2: "<RetryUntilSuccessful" " " num_attempts_attr ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</RetryUntilSuccessful>"
+repeat_l2: "<Repeat" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</Repeat>"
+retry_l2: "<RetryUntilSuccessful" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</RetryUntilSuccessful>"
 keep_running_l2: "<KeepRunningUntilFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</KeepRunningUntilFailure>"
-rate_ctrl_l2: "<RateController" " " hz_attr ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</RateController>"
 
-// Level 3 decorators
-decorator_l3: inverter_l3 | force_success_l3 | force_failure_l3 | repeat_l3 | retry_l3 | keep_running_l3 | rate_ctrl_l3
+decorator_l3: inverter_l3 | force_success_l3 | force_failure_l3 | repeat_l3 | retry_l3 | keep_running_l3
 inverter_l3: "<Inverter" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</Inverter>"
 force_success_l3: "<ForceSuccess" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</ForceSuccess>"
 force_failure_l3: "<ForceFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</ForceFailure>"
-repeat_l3: "<Repeat" " " num_cycles_attr ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</Repeat>"
-retry_l3: "<RetryUntilSuccessful" " " num_attempts_attr ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</RetryUntilSuccessful>"
+repeat_l3: "<Repeat" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</Repeat>"
+retry_l3: "<RetryUntilSuccessful" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</RetryUntilSuccessful>"
 keep_running_l3: "<KeepRunningUntilFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</KeepRunningUntilFailure>"
-rate_ctrl_l3: "<RateController" " " hz_attr ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</RateController>"
 
-// Level 4 decorators (children are leaf level)
-decorator_l4: inverter_l4 | force_success_l4 | force_failure_l4 | repeat_l4 | retry_l4 | keep_running_l4 | rate_ctrl_l4
+decorator_l4: inverter_l4 | force_success_l4 | force_failure_l4 | repeat_l4 | retry_l4 | keep_running_l4
 inverter_l4: "<Inverter" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</Inverter>"
 force_success_l4: "<ForceSuccess" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</ForceSuccess>"
 force_failure_l4: "<ForceFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</ForceFailure>"
-repeat_l4: "<Repeat" " " num_cycles_attr ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</Repeat>"
-retry_l4: "<RetryUntilSuccessful" " " num_attempts_attr ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</RetryUntilSuccessful>"
+repeat_l4: "<Repeat" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</Repeat>"
+retry_l4: "<RetryUntilSuccessful" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</RetryUntilSuccessful>"
 keep_running_l4: "<KeepRunningUntilFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</KeepRunningUntilFailure>"
-rate_ctrl_l4: "<RateController" " " hz_attr ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</RateController>"
 
 // ============================================================================
-// LEAF NODES (actions and conditions - no children)
+// LEAF NODES - Explicit syntax: <Action ID="NodeType" .../> and <Condition ID="..."/>
 // ============================================================================
 
-// Condition nodes (self-closing, return SUCCESS or FAILURE)
-condition_node: goal_reached | is_stuck | is_battery_low | goal_updated | time_expired | distance_traveled
+// Action node using explicit syntax - ID specifies the node type, other attributes are ports
+action_node: "<Action" " " action_id_attr ((" " | "\t") attribute)* " "? "/>"
+action_id_attr: "ID" " "? "=" " "? "\"" action_id_value "\""
+action_id_value: /[A-Za-z][A-Za-z0-9_]*/
 
-goal_reached: "<GoalReached" ((" " | "\t") attribute)* " "? "/>"
-is_stuck: "<IsStuck" ((" " | "\t") attribute)* " "? "/>"
-is_battery_low: "<IsBatteryLow" ((" " | "\t") attribute)* " "? "/>"
-goal_updated: "<GoalUpdated" ((" " | "\t") attribute)* " "? "/>"
-time_expired: "<TimeExpired" " " time_expired_attr ((" " | "\t") attribute)* " "? "/>"
-distance_traveled: "<DistanceTraveled" " " distance_attr ((" " | "\t") attribute)* " "? "/>"
-
-// Action nodes (always self-closing)
-action_node: spin_left | spin_right | drive_on_heading | backup | detect_obj | pick_obj | place_obj | wait | compute_path | follow_path | navigate_to_pose | clear_costmap
-
-// Action nodes with mandatory and optional attributes
-compute_path: "<ComputePathToPose" " " goal_attr " " path_attr (" " planner_id_attr)? (" " name_attr)? " "? "/>"
-follow_path: "<FollowPath" " " path_attr (" " controller_id_attr)? (" " name_attr)? " "? "/>"
-navigate_to_pose: "<NavigateToPose" " " goal_attr (" " behavior_tree_attr)? (" " name_attr)? " "? "/>"
-spin_left: "<SpinLeft" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
-spin_right: "<SpinRight" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
-drive_on_heading: "<DriveOnHeading" " " dist_to_travel_attr " " speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
-backup: "<BackUp" " " backup_dist_attr " " backup_speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"
-wait: "<Wait" " " wait_duration_attr (" " name_attr)? " "? "/>"
-detect_obj: "<DetectObject" " " object_description_attr " " detect_target_pose_attr " " detect_object_pose_attr " " detect_object_height_attr " " detect_object_width_attr (" " name_attr)? " "? "/>"
-pick_obj: "<PickObject" " " pick_target_pose_attr " " pick_object_height_attr " " pick_object_width_attr (" " name_attr)? " "? "/>"
-place_obj: "<PlaceObject" " " place_target_pose_attr (" " name_attr)? " "? "/>"
-clear_costmap: "<ClearEntireCostmap" (" " costmap_attr)? (" " name_attr)? " "? "/>"
+// Condition node using explicit syntax
+condition_node: "<Condition" " " condition_id_attr ((" " | "\t") attribute)* " "? "/>"
+condition_id_attr: "ID" " "? "=" " "? "\"" condition_id_value "\""
+condition_id_value: /[A-Za-z][A-Za-z0-9_]*/
 
 // ============================================================================
 // ATTRIBUTE DEFINITIONS
 // ============================================================================
 
-// Action parameter attributes
-goal_attr: "goal" " "? "=" " "? "\"" goal_var "\""
-path_attr: "path" " "? "=" " "? "\"" path_var "\""
-planner_id_attr: "planner_id" " "? "=" " "? "\"" att_value_content "\""
-controller_id_attr: "controller_id" " "? "=" " "? "\"" att_value_content "\""
-behavior_tree_attr: "behavior_tree" " "? "=" " "? "\"" att_value_content "\""
-spin_dist_attr: "spin_dist" " "? "=" " "? "\"" numeric_value "\""
-dist_to_travel_attr: "dist_to_travel" " "? "=" " "? "\"" numeric_value "\""
-speed_attr: "speed" " "? "=" " "? "\"" numeric_value "\""
-backup_dist_attr: "backup_dist" " "? "=" " "? "\"" numeric_value "\""
-backup_speed_attr: "backup_speed" " "? "=" " "? "\"" numeric_value "\""
-time_allowance_attr: "time_allowance" " "? "=" " "? "\"" numeric_value "\""
-wait_duration_attr: "wait_duration" " "? "=" " "? "\"" numeric_value "\""
-object_description_attr: "object_description" " "? "=" " "? "\"" att_value_content "\""
-detect_target_pose_attr: "target_pose" " "? "=" " "? "\"{goal}\""
-detect_object_pose_attr: "object_pose" " "? "=" " "? "\"{object_pose}\""
-detect_object_height_attr: "object_height" " "? "=" " "? "\"{object_height}\""
-detect_object_width_attr: "object_width" " "? "=" " "? "\"{object_width}\""
-pick_target_pose_attr: "target_pose" " "? "=" " "? "\"{object_pose}\""
-pick_object_height_attr: "object_height" " "? "=" " "? "\"{object_height}\""
-pick_object_width_attr: "object_width" " "? "=" " "? "\"{object_width}\""
-place_target_pose_attr: "target_pose" " "? "=" " "? "\"{object_pose}\""
-costmap_attr: "costmap" " "? "=" " "? "\"" att_value_content "\""
-name_attr: "name" " "? "=" " "? "\"" att_value_content "\""
-
-// Decorator node attributes
-num_cycles_attr: "num_cycles" " "? "=" " "? "\"" numeric_value "\""
-num_attempts_attr: "num_attempts" " "? "=" " "? "\"" numeric_value "\""
-hz_attr: "hz" " "? "=" " "? "\"" numeric_value "\""
-
-// Condition node attributes
-time_expired_attr: "seconds" " "? "=" " "? "\"" numeric_value "\""
-distance_attr: "distance" " "? "=" " "? "\"" numeric_value "\""
-
-// Variable name constraints
-goal_var: "{goal}"
-path_var: "{path}"
-
-// Value patterns
-numeric_value: /[0-9]+\.?[0-9]*/
-att_value_content: /[^<&";]*/
-
-// Generic attribute for control nodes and root elements
+// Generic attribute - any name="value" pair
 attribute: att_name " "? "=" " "? "\"" att_value_content "\""
 att_name: /[a-zA-Z_][a-zA-Z0-9_]*/
+att_value_content: /[^<&"]*/
 
 WS: /[ \t\n\r]+/

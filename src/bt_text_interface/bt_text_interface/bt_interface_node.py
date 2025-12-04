@@ -1,4 +1,5 @@
 """ROS2 Action Server for BehaviorTree Generation and Execution"""
+import asyncio
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -163,10 +164,10 @@ class BTInterfaceNode(Node):
             result.bt_xml_path = str(bt_file_path)
             self.get_logger().info(f'BT written to: {bt_file_path}')
 
-            # Store and publish the BT
+            # Store the original BT and publish with UIDs for Foxglove visualization
             self.last_bt_xml = bt_xml
             bt_msg = String()
-            bt_msg.data = bt_xml
+            bt_msg.data = self.add_uids_for_foxglove(bt_xml)
             self._bt_xml_publisher.publish(bt_msg)
             self.get_logger().info('BT published to /generated_behavior_tree topic')
 
@@ -208,7 +209,6 @@ class BTInterfaceNode(Node):
                     'command': command,
                     'max_tokens': 1024,
                     'temperature': 0.1,
-                    'use_few_shot': True,
                     'prompt_format': 'alpaca',
                     'use_query_rewriting': True
                 },
@@ -266,6 +266,82 @@ class BTInterfaceNode(Node):
         except Exception as e:
             return False, f'Validation error: {str(e)}'
 
+    def add_uids_for_foxglove(self, xml_string: str) -> str:
+        """Add unique _uid attributes to all nodes for Foxglove Polymath BT panel visualization.
+        This is only used for publishing to the topic, not for the file written to disk."""
+        try:
+            root = ET.fromstring(xml_string)
+            node_counts = {}  # Track counts per node type for uniqueness
+
+            def add_uid_recursive(element):
+                """Recursively add _uid to element and all children."""
+                tag = element.tag
+
+                # Build a meaningful UID based on node type and attributes
+                if tag == 'root':
+                    uid = 'root'
+                elif tag == 'BehaviorTree':
+                    tree_id = element.get('ID', 'Tree')
+                    uid = f'BehaviorTree_{tree_id}'
+                else:
+                    # For action/condition/control nodes, use tag + name or key attribute
+                    name = element.get('name')
+                    node_id = element.get('ID')  # For explicit syntax <Action ID="..."/>
+
+                    if name:
+                        base = f'{tag}_{name}'
+                    elif node_id:
+                        base = f'{tag}_{node_id}'
+                    elif tag in ('Action', 'Condition'):
+                        # Explicit syntax without name
+                        base = tag
+                    else:
+                        # Control/decorator nodes or leaf nodes with compact syntax
+                        base = tag
+
+                    # Add distinguishing attribute for certain nodes
+                    if tag == 'DetectObject':
+                        obj = element.get('object_description', '')
+                        if obj:
+                            base = f'{tag}_{obj}'
+                    elif tag == 'PickObject':
+                        obj = element.get('object_description', '')
+                        if obj:
+                            base = f'{tag}_{obj}'
+                    elif tag == 'PlaceObject':
+                        desc = element.get('place_description', '')
+                        if desc:
+                            base = f'{tag}_{desc}'
+                    elif tag in ('SpinLeft', 'SpinRight'):
+                        dist = element.get('spin_dist', '')
+                        if dist:
+                            base = f'{tag}_{dist}rad'
+                    elif tag == 'Wait':
+                        dur = element.get('wait_duration', '')
+                        if dur:
+                            base = f'{tag}_{dur}s'
+                    elif tag == 'Repeat':
+                        cycles = element.get('num_cycles', '')
+                        if cycles:
+                            base = f'{tag}_{cycles}x'
+
+                    # Sanitize and ensure uniqueness
+                    base = base.replace(' ', '_').replace('"', '').replace("'", '')
+                    node_counts[base] = node_counts.get(base, 0) + 1
+                    count = node_counts[base]
+                    uid = f'{base}_{count}' if count > 1 else base
+
+                element.set('_uid', uid)
+                for child in element:
+                    add_uid_recursive(child)
+
+            add_uid_recursive(root)
+
+            return ET.tostring(root, encoding='unicode', xml_declaration=True)
+
+        except ET.ParseError:
+            return xml_string
+
     def write_bt_file(self, xml_content: str) -> Path:
         """Write BT XML to file with UUID naming. Returns path to written file."""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -297,8 +373,8 @@ class BTInterfaceNode(Node):
             send_goal_future = self._nav_client.send_goal_async(nav_goal)
 
             start_wait = time.time()
-            while not send_goal_future.done() and (time.time() - start_wait) < 5.0:
-                time.sleep(0.05)
+            while not send_goal_future.done() and (time.time() - start_wait) < 10.0:
+                await asyncio.sleep(0.05)
 
             if not send_goal_future.done():
                 return False, 'Failed to send navigation goal (timeout)'
@@ -335,7 +411,7 @@ class BTInterfaceNode(Node):
                     self.publish_feedback(goal_handle, 'executing', progress, f'Executing BT... ({int(elapsed)}s elapsed)')
                     last_feedback_time = current_time
 
-                time.sleep(0.1)
+                await asyncio.sleep(0.1)
 
             result = get_result_future.result()
             if result.status == 4:
@@ -426,7 +502,7 @@ class BTInterfaceNode(Node):
         """Periodically republish the last executed BT for late-joining subscribers"""
         if self.last_bt_xml is not None:
             bt_msg = String()
-            bt_msg.data = self.last_bt_xml
+            bt_msg.data = self.add_uids_for_foxglove(self.last_bt_xml)
             self._bt_xml_publisher.publish(bt_msg)
 
 

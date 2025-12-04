@@ -19,18 +19,21 @@ namespace bt_nav2_plugins
 {
 
 /**
- * @brief BT node to detect objects using Grounding DINO (via ROS2 service)
+ * @brief BT node to detect objects using Florence2 (via ROS2 service)
  *
- * This node uses Grounding DINO for fast, accurate open-vocabulary object detection.
- * It calls a ROS2 service provided by the grounding_dino_service node.
+ * This node uses Florence2 for open-vocabulary object detection.
+ * It calls a ROS2 service provided by the florence2_service node.
+ * 
+ * This node is used for initial detection to get an approach pose for navigation.
+ * The actual object pose for manipulation is computed by PickObject/PlaceObject
+ * which perform close-range detection for better accuracy.
  *
  * Input Ports:
  *   object_description - Description of object to find (e.g., "red cup", "table")
  *   box_threshold - Confidence threshold for detection (default: 0.35)
  *
  * Output Ports:
- *   target_pose - Navigation approach pose (0.5m from object, facing it)
- *   object_pose - Actual object pose for manipulation
+ *   target_pose - Navigation approach pose (near object, facing it)
  *   detected - Boolean indicating if object was found
  *   confidence - Detection confidence score (0-1)
  */
@@ -49,11 +52,8 @@ public:
       BT::InputPort<std::string>("object_description", "Description of object to detect"),
       BT::InputPort<double>("box_threshold", 0.35, "Detection confidence threshold (0-1)"),
       BT::OutputPort<geometry_msgs::msg::PoseStamped>("target_pose", "Approach pose for navigation"),
-      BT::OutputPort<geometry_msgs::msg::PoseStamped>("object_pose", "Actual object pose for manipulation"),
       BT::OutputPort<bool>("detected", "Whether object was detected"),
-      BT::OutputPort<double>("confidence", "Detection confidence score"),
-      BT::OutputPort<double>("object_height", "Estimated object height in meters"),
-      BT::OutputPort<double>("object_width", "Estimated object width in meters")
+      BT::OutputPort<double>("confidence", "Detection confidence score")
     };
   }
 
@@ -67,14 +67,12 @@ private:
   void depthCallback(const sensor_msgs::msg::Image::SharedPtr msg);
   void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
 
-  // Convert pixel coordinates to 3D pose using camera intrinsics
-  // Returns approach pose (for navigation) and stores actual object pose in object_pose_out
+  // Convert pixel coordinates to 3D approach pose for navigation
   geometry_msgs::msg::PoseStamped pixelToPose(
     float center_x,
     float center_y,
     float depth_value,
-    const std::string & frame_id,
-    geometry_msgs::msg::PoseStamped & object_pose_out);
+    const std::string & frame_id);
 
   // Node and TF
   rclcpp::Node::SharedPtr node_;         // Shared Nav2 node for service calls

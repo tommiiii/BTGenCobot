@@ -4,7 +4,7 @@
   <name>btgencobot_interfaces</name>
   <version>1.0.0</version>
   <description>Custom ROS2 interfaces for BTGenCobot system</description>
-  <maintainer email="noreply@example.com">BTGenCobot Team</maintainer>
+  <maintainer email="tomtom4830@gmail.com">Tommaso De Pascale</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

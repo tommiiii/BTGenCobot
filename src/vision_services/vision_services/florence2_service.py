@@ -175,23 +175,23 @@ class Florence2Service(Node):
             return self._create_error_response(response, str(e))
 
     def _process_detection(self, image, request):
-        """Process detection with Florence-2 + SAM"""
+        """Process detection with Florence-2"""
         if self.use_mock:
             return self._mock_detect(image, request.object_description)
         else:
-            return self._detect_and_segment(image, request.object_description, request.box_threshold)
+            return self._detect_object(image, request.object_description)
 
-    def _detect_and_segment(self, image, text_prompt, box_threshold):
-        """Run Florence-2 open vocabulary detection (single-pass, no verification needed)"""
+    def _detect_object(self, image, text_prompt):
+        """Run Florence-2 open vocabulary detection to find objects matching text description"""
         try:
             # Convert to PIL Image
             pil_image = PILImage.fromarray(image)
-            
+
             # Use Florence-2's Open Vocabulary Detection task
-            # This directly finds objects matching the text query in a single pass
+            # This finds objects matching the natural language description
             task_prompt = '<OPEN_VOCABULARY_DETECTION>'
             prompt = task_prompt + text_prompt
-            
+
             self.get_logger().info(f'Using Florence-2 open vocabulary detection: "{text_prompt}"')
             
             # Prepare inputs
@@ -227,7 +227,8 @@ class Florence2Service(Node):
 
             self.get_logger().info(f'Florence-2 raw output: {parsed_answer}')
 
-            # Extract detections
+            # Extract detections from open vocabulary detection
+            # OVD returns bboxes and labels
             if task_prompt not in parsed_answer:
                 return self._create_detection_result(
                     detected=False,
@@ -236,7 +237,7 @@ class Florence2Service(Node):
 
             detection_data = parsed_answer[task_prompt]
             bboxes = detection_data.get('bboxes', [])
-            labels = detection_data.get('bboxes_labels', [])  # OVD uses 'bboxes_labels' key
+            labels = detection_data.get('bboxes_labels', [])
 
             if len(bboxes) == 0:
                 return self._create_detection_result(
@@ -244,15 +245,14 @@ class Florence2Service(Node):
                     error=f'No objects found matching "{text_prompt}"'
                 )
 
-            # Store all detections for debug visualization
-            # No verification needed - OVD directly returns relevant matches
+            # Build detection list from bboxes
             all_detections = []
             for i, bbox in enumerate(bboxes):
                 x1, y1, x2, y2 = bbox
                 cx = (x1 + x2) / 2
                 cy = (y1 + y2) / 2
                 label = labels[i] if i < len(labels) else text_prompt
-                
+
                 all_detections.append({
                     'bbox': [float(x1), float(y1), float(x2), float(y2)],
                     'center_x': float(cx),
@@ -261,14 +261,19 @@ class Florence2Service(Node):
                     'phrase': label
                 })
 
-            self.get_logger().info(f'Found {len(all_detections)} detections')
+            if len(all_detections) == 0:
+                return self._create_detection_result(
+                    detected=False,
+                    error=f'No objects found matching "{text_prompt}"'
+                )
+
+            self.get_logger().info(f'Found {len(all_detections)} detection(s) for "{text_prompt}"')
             for i, det in enumerate(all_detections):
                 self.get_logger().info(f"  {i}: '{det['phrase']}' at ({det['center_x']:.1f}, {det['center_y']:.1f})")
 
-            # Select the first detection (Florence-2 returns most relevant first)
+            # Select the first detection (most relevant according to Florence-2)
             selected_detection = all_detections[0]
 
-            # Use bounding box center for pose estimation
             return self._create_detection_result(
                 detected=True,
                 confidence=selected_detection['confidence'],
@@ -276,6 +281,7 @@ class Florence2Service(Node):
                 center_y=selected_detection['center_y'],
                 bbox=selected_detection['bbox'],
                 phrase=selected_detection['phrase'],
+                mask=None,  # No mask with OVD, only bboxes
                 all_detections=all_detections
             )
 
@@ -341,32 +347,31 @@ class Florence2Service(Node):
         return response
 
     def _publish_debug_image(self, image, result, all_detections):
-        """Publish debug visualization with top 3 detections"""
+        """Publish debug visualization with bounding boxes"""
         try:
             debug_img = cv2.cvtColor(image.copy(), cv2.COLOR_RGB2BGR)
-            
-            # Draw top 3 detections
-            top_3 = all_detections[:3]
-            colors = [(0, 0, 255), (0, 165, 255), (0, 255, 255)]  # Red, Orange, Yellow
-            
-            for i, det in enumerate(top_3):
-                color = colors[i]
+
+            # Draw all detections with bounding boxes
+            for i, det in enumerate(all_detections[:5]):
+                color = (0, 255, 0) if i == 0 else (0, 165, 255)  # Green for selected, orange for others
+
+                # Draw bounding box
                 x1, y1, x2, y2 = [int(v) for v in det['bbox']]
-                thickness = 3 if i == 0 else 2
-                
-                cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, thickness)
-                
+                cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, 2)
+
+                # Draw center point
                 cx, cy = int(det['center_x']), int(det['center_y'])
                 cv2.circle(debug_img, (cx, cy), 6, color, -1)
                 cv2.circle(debug_img, (cx, cy), 6, (255, 255, 255), 2)
-                
+
+                # Label
                 label = f"#{i+1}: {det['phrase']}"
                 label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-                cv2.rectangle(debug_img, 
-                            (x1, y1 - label_size[1] - 15), 
-                            (x1 + label_size[0] + 10, y1), 
+                cv2.rectangle(debug_img,
+                            (x1, y1 - label_size[1] - 15),
+                            (x1 + label_size[0] + 10, y1),
                             color, -1)
-                cv2.putText(debug_img, label, (x1 + 5, y1 - 7), 
+                cv2.putText(debug_img, label, (x1 + 5, y1 - 7),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
             # Publish

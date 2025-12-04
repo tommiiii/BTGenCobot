@@ -22,8 +22,8 @@ class ModelConfig(BaseModel):
     top_p: float = 0.9
 
     # Backend configuration
-    backend: str = "mlx"  # mlx for Apple Silicon acceleration
-    device: str = "gpu"  # Use Metal GPU
+    backend: str = "transformers"  # Hugging Face transformers with Outlines
+    device: str = "mps"  # Apple Metal (mps) or cpu
 
     # Timeout settings
     generation_timeout: int = 30  # seconds

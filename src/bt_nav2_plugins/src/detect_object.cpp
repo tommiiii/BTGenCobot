@@ -134,7 +134,7 @@ BT::NodeStatus DetectObject::onRunning()
       image_time.seconds(),
       detection_start_time_.seconds());
     latest_image_.reset();
-    latest_depth_.reset();
+    // Don't reset depth here - let it accumulate independently
     return BT::NodeStatus::RUNNING;
   }
 
@@ -363,37 +363,11 @@ BT::NodeStatus DetectObject::onRunning()
   // Use camera optical frame for pose estimation
   std::string camera_frame = "camera_rgb_optical_frame";
 
-  geometry_msgs::msg::PoseStamped object_pose;
   geometry_msgs::msg::PoseStamped target_pose = pixelToPose(
     refined_center_x,
     refined_center_y,
     depth,
-    camera_frame,
-    object_pose);
-
-  // Calculate object dimensions from bounding box using pinhole camera model
-  // real_size = (pixel_size * depth) / focal_length
-  double object_height = 0.1;  // default 10cm
-  double object_width = 0.05;  // default 5cm
-  
-  if (response->bbox.size() >= 4 && has_camera_info_ && depth > 0) {
-    float bbox_width_pixels = response->bbox[2] - response->bbox[0];
-    float bbox_height_pixels = response->bbox[3] - response->bbox[1];
-    
-    // Convert pixel dimensions to real-world dimensions
-    object_width = (bbox_width_pixels * depth) / fx_;
-    object_height = (bbox_height_pixels * depth) / fy_;
-    
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "Object dimensions from bbox: width=%.3fm, height=%.3fm (bbox: %.0fx%.0f px, depth: %.2fm)",
-      object_width, object_height, bbox_width_pixels, bbox_height_pixels, depth);
-  } else {
-    RCLCPP_WARN(
-      node_->get_logger(),
-      "Cannot calculate object dimensions, using defaults: width=%.3fm, height=%.3fm",
-      object_width, object_height);
-  }
+    camera_frame);
 
   RCLCPP_INFO(
     node_->get_logger(),
@@ -404,20 +378,15 @@ BT::NodeStatus DetectObject::onRunning()
     depth);
   RCLCPP_INFO(
     node_->get_logger(),
-    "Poses in map: approach (%.2f, %.2f), object (%.2f, %.2f) (conf: %.2f)",
+    "Approach pose in map: (%.2f, %.2f) (conf: %.2f)",
     target_pose.pose.position.x,
     target_pose.pose.position.y,
-    object_pose.pose.position.x,
-    object_pose.pose.position.y,
     response->confidence);
 
-  // Set output ports
+  // Set output ports (only approach pose for navigation - object pose computed by PickObject/PlaceObject)
   setOutput("target_pose", target_pose);
-  setOutput("object_pose", object_pose);
   setOutput("detected", true);
   setOutput("confidence", static_cast<double>(response->confidence));
-  setOutput("object_height", object_height);
-  setOutput("object_width", object_width);
 
   return BT::NodeStatus::SUCCESS;
 }
@@ -465,8 +434,7 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
   float center_x,
   float center_y,
   float depth_value,
-  const std::string & frame_id,
-  geometry_msgs::msg::PoseStamped & object_pose_out)
+  const std::string & frame_id)
 {
   // Pinhole camera model: pixel to 3D point in optical frame
   // Optical frame: +X=right, +Y=down, +Z=forward
@@ -495,7 +463,7 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
       "map",
       tf2::durationFromSec(1.0));
 
-    // Store original object position (before applying approach offset)
+    // Store original object position
     double obj_x = pose_map.pose.position.x;
     double obj_y = pose_map.pose.position.y;
     
@@ -525,35 +493,18 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
       "Object at (%.2f, %.2f), distance from robot: %.2fm",
       obj_x, obj_y, distance_to_object);
     
-    // Set the actual object pose output (for manipulation)
-    // Keep in map frame - the manipulator service will transform to arm frame at pick time
-    object_pose_out.header = pose_map.header;
-    object_pose_out.pose.position.x = obj_x;
-    object_pose_out.pose.position.y = obj_y;
-    object_pose_out.pose.position.z = pose_map.pose.position.z;
-    
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "Object pose for manipulation (map): (%.2f, %.2f, %.2f)",
-      obj_x, obj_y, pose_map.pose.position.z);
-    
     // Calculate orientation: face toward object from robot position
     double yaw = std::atan2(dy, dx);
     tf2::Quaternion q;
     q.setRPY(0, 0, yaw);
-    object_pose_out.pose.orientation.x = q.x();
-    object_pose_out.pose.orientation.y = q.y();
-    object_pose_out.pose.orientation.z = q.z();
-    object_pose_out.pose.orientation.w = q.w();
 
-    // Calculate approach pose (for navigation) - offset back from object along robot->object line
+    // Calculate approach pose (for navigation)
     // Project to ground plane (z=0 for 2D navigation)
     pose_map.pose.position.z = 0.0;
     
     // Nav2 has xy_goal_tolerance of 0.25m, so it may stop short of the goal.
     // Set goal at object position - Nav2 will stop when within tolerance,
     // which should put the robot close enough for the arm to reach.
-    // The arm reach is ~0.35m, so stopping 0.20-0.25m away should work.
     const double approach_offset = 0.0;  // Navigate directly to object position
     
     if (distance_to_object > approach_offset) {
@@ -569,7 +520,10 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     }
 
     // Face toward object
-    pose_map.pose.orientation = object_pose_out.pose.orientation;
+    pose_map.pose.orientation.x = q.x();
+    pose_map.pose.orientation.y = q.y();
+    pose_map.pose.orientation.z = q.z();
+    pose_map.pose.orientation.w = q.w();
 
     RCLCPP_INFO(
       node_->get_logger(),
@@ -582,7 +536,6 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     RCLCPP_ERROR(
       node_->get_logger(),
       "TF transform failed: %s", ex.what());
-    object_pose_out = pose_camera;
     return pose_camera;
   }
 }

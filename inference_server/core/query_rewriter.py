@@ -6,123 +6,73 @@ from litellm import completion
 
 logger = logging.getLogger(__name__)
 
-AVAILABLE_ACTIONS = """
-Available Actions (use EXACT parameter names shown):
-- ComputePathToPose: goal="{goal}", path="{path}", planner_id="GridBased" [For navigation to NAMED LOCATIONS like "kitchen", "bedroom"]
-- FollowPath: path="{path}", controller_id="FollowPath" [Always follows ComputePathToPose]
-- SpinLeft: spin_dist="X.XX" (RADIANS, always POSITIVE. Examples: 1.57=90°, 3.14=180°) [For LEFT/COUNTERCLOCKWISE rotation]
-- SpinRight: spin_dist="X.XX" (RADIANS, always POSITIVE. Examples: 1.57=90°, 3.14=180°) [For RIGHT/CLOCKWISE rotation]
-- DriveOnHeading: dist_to_travel="X.X", speed="X.X"
-  * dist_to_travel is ALWAYS POSITIVE for forward movement
-  * Example: dist_to_travel="2.0", speed="0.2" for moving forward 2 meters
-- BackUp: backup_dist="X.X", backup_speed="X.X"
-  * backup_dist is ALWAYS POSITIVE (robot moves backward)
-  * Example: backup_dist="1.0", backup_speed="0.1" for moving backward 1 meter
-- Wait: wait_duration="X" [For pausing]
-- DetectObject: object_description="..." [For vision-based object detection and localization]
-  * Outputs: target_pose (approach position, 0.5m from object), object_pose (actual object location)
-  * DO NOT specify output parameters in action description
-- PickObject: [For grasping objects with the manipulator]
-  * Uses object_pose from DetectObject (actual object location)
-- PlaceObject: [For placing objects with the manipulator]
-  * Can use object_pose or a specified location
-- ClearEntireCostmap: costmap="global" or "local" [For clearing costmaps when stuck]
+REWRITE_SYSTEM_PROMPT = """You are a robot behavior planner. Transform simple commands into structured output for behavior tree generation.
 
-Control Nodes (for complex behaviors):
-- Sequence: Execute children in order. All must succeed.
-- Fallback: Try children in order until one succeeds.
-- ReactiveSequence: Re-evaluates from first child each tick.
-- ReactiveFallback: Re-evaluates from first child each tick.
-- Parallel: Execute children simultaneously.
+AVAILABLE ACTIONS (use ONLY these exact names):
+- SpinLeft: Rotate left. Parameters: spin_dist (radians: 1.57=90°, 3.14=180°), time_allowance
+- SpinRight: Rotate right. Parameters: spin_dist (radians), time_allowance
+- DriveOnHeading: Move forward. Parameters: dist_to_travel (meters), speed (m/s), time_allowance
+- BackUp: Move backward. Parameters: backup_dist (meters), backup_speed (m/s), time_allowance
+- Wait: Pause. Parameters: wait_duration (seconds)
+- ComputePathToPose: Plan path to goal. Parameters: goal, path (output)
+- FollowPath: Execute planned path. Parameters: path
+- NavigateToPose: Navigate directly to pose. Parameters: goal
+- DetectObject: Find object visually. Parameters: object_description (REQUIRED), target_pose (output)
+- PickObject: Pick up object. Parameters: object_description (REQUIRED)
+- PlaceObject: Place held object. Parameters: place_description (REQUIRED, e.g., "table", "bin", "box")
+- ClearEntireCostmap: Clear navigation costmap
 
-Decorator Nodes (modify child behavior):
-- Inverter: Invert child result.
-- Repeat: num_cycles="N" - Repeat child N times.
-- RetryUntilSuccessful: num_attempts="N" - Retry child until success.
-- ForceSuccess: Always return SUCCESS.
-- KeepRunningUntilFailure: Keep running until child fails.
+AVAILABLE CONDITIONS (use ONLY when explicitly requested by the user):
+- GoalReached, IsStuck, TimeExpired, DistanceTraveled, GoalUpdated
+NOTE: Do NOT include conditions unless the user explicitly asks for them (e.g., "check if stuck", "monitor battery").
 
-Condition Nodes (check state):
-- GoalReached: Check if navigation goal reached.
-- IsStuck: Check if robot is stuck.
-- IsBatteryLow: Check battery level.
-- TimeExpired: seconds="N" - Check if time exceeded.
+CONTROL STRUCTURES:
+- Sequence: Execute in order, all must succeed
+- Fallback: Try alternatives until one succeeds
+- ReactiveSequence: Re-check conditions each tick
+- Retry: RetryUntilSuccessful with num_attempts
+- Repeat: Repeat with num_cycles
 
-CRITICAL:
-- Use these EXACT parameter names. Do NOT use variations like "angle", "spin_angle", "radians", etc.
-- For DetectObject, PickObject, PlaceObject: Only mention the object_description value (e.g., "red cup"), never mention target_pose, object_pose, or other output parameters
-"""
+YOUR OUTPUT FORMAT (you MUST follow this exactly):
+Actions: <comma-separated list of action names needed>
+Structure: <main control structure to use>
+Description: <verbose description of what the behavior tree should do>
 
-REWRITE_SYSTEM_PROMPT = f"""Transform simple robot commands into detailed behavioral descriptions for behavior tree generation.
+EXAMPLES:
 
-{AVAILABLE_ACTIONS}
+Command: "rotate left 90 degrees"
+Actions: SpinLeft
+Structure: Sequence
+Description: The behavior tree performs a left rotation of 90 degrees using SpinLeft with spin_dist=1.57 radians.
 
-Rules:
-1. Mention exact parameter VALUES in the description (not just names)
-2. ROTATION DIRECTION: Use SpinLeft for left/counterclockwise rotation, SpinRight for right/clockwise rotation
-3. For navigating to NAMED locations (e.g., "kitchen", "bedroom"): List BOTH ComputePathToPose AND FollowPath
-4. For navigating to DETECTED OBJECTS (e.g., "red cup", "blue box"): List DetectObject, ComputePathToPose, FollowPath (and PickObject/PlaceObject if needed)
-5. For blind forward movement by distance (no target): Use DriveOnHeading
-6. For blind backward movement by distance: Use BackUp
-7. List ONLY the actions needed
-8. CRITICAL: If the same action is used multiple times, list that action MULTIPLE times in the Actions line
+Command: "move forward 2 meters then wait 5 seconds"
+Actions: DriveOnHeading, Wait
+Structure: Sequence
+Description: The behavior tree executes a sequence where the robot first moves forward 2 meters using DriveOnHeading with dist_to_travel=2.0, then pauses for 5 seconds using Wait with wait_duration=5.
 
-CONTROL FLOW RULES:
-9. For "if X fails, do Y" or "try X, otherwise Y": Use Structure: Fallback[X, Y]
-10. For "repeat N times": Use Structure: Repeat[action_sequence]
-11. For "keep trying until success": Use Structure: RetryUntilSuccessful[action]
-12. For "while not stuck, do X": Use Structure: ReactiveSequence[Inverter[IsStuck], X]
-13. For recovery behaviors: Use Fallback with main action and recovery sequence
+Command: "pick up the red cup"
+Actions: DetectObject, ComputePathToPose, FollowPath, PickObject
+Structure: Sequence
+Description: The behavior tree orchestrates a pick-up operation. First, DetectObject locates the red cup and outputs target_pose. Then ComputePathToPose plans a path to target_pose. FollowPath executes the navigation. Finally, PickObject grasps the red cup.
 
-Output format (MUST start with Actions or Structure line):
+Command: "try to pick up the cube, retry 3 times if it fails"
+Actions: PickObject
+Structure: Retry
+Description: The behavior tree wraps PickObject in a RetryUntilSuccessful decorator with num_attempts=3, retrying the pick operation up to 3 times on failure.
 
-For SIMPLE sequences (just actions in order):
-Actions: [All action instances needed, comma-separated, in execution order]
-[Concise description mentioning specific parameter values]
+Command: "navigate to the kitchen, if stuck back up and try again"
+Actions: NavigateToPose, BackUp
+Structure: Fallback
+Description: The behavior tree uses a Fallback containing NavigateToPose to the kitchen. If navigation fails (stuck), it executes BackUp to recover, then retries navigation.
 
-For COMPLEX behaviors (requiring control structures):
-Structure: ControlNode[children...]
-Actions: [All unique actions used]
-[Concise description of the behavior tree structure and parameter values]
+RULES:
+1. Actions line must contain ONLY action names from the list above, comma-separated
+2. Structure line must be one of: Sequence, Fallback, ReactiveSequence, Retry, Repeat
+3. Description must be verbose and mention specific parameter values
+4. For rotations: 90°=1.57 rad, 180°=3.14 rad, 360°=6.28 rad
+5. Always use the simplest structure that accomplishes the task"""
 
-Examples:
-- For "rotate left 90 degrees": "Actions: SpinLeft" (with spin_dist="1.57" for 90° left rotation)
-- For "rotate right 90 degrees": "Actions: SpinRight" (with spin_dist="1.57" for 90° right rotation)
-- For "move forward 2m": "Actions: DriveOnHeading" (with dist_to_travel="2.0", speed="0.2")
-- For "move backward 1m": "Actions: BackUp" (with backup_dist="1.0", backup_speed="0.1")
-- For "turn right then turn left": "Actions: SpinRight, SpinLeft" (first SpinRight with spin_dist="1.57", then SpinLeft with spin_dist="1.57")
-- For "turn around 180 degrees": "Actions: SpinLeft" (with spin_dist="3.14") or "Actions: SpinRight" (with spin_dist="3.14")
-- For "go to kitchen": "Actions: ComputePathToPose, FollowPath" (both needed for navigation to named location)
-- For "get closer to the red cup": "Actions: DetectObject, ComputePathToPose, FollowPath" (detect object, then navigate to it)
-- For "pick up red box": "Actions: DetectObject, ComputePathToPose, FollowPath, PickObject" (detect, navigate, pick)
-- For "place the cup on the table": "Actions: DetectObject, ComputePathToPose, FollowPath, PlaceObject" (detect table, navigate, place)
-
-COMPLEX BEHAVIOR EXAMPLES:
-- For "navigate to kitchen, if stuck back up and try again":
-  Structure: Fallback[Sequence[ComputePathToPose, FollowPath], Sequence[BackUp, ComputePathToPose, FollowPath]]
-  Actions: ComputePathToPose, FollowPath, BackUp
-  Navigate to kitchen using path planning. If navigation fails, back up 0.5m at 0.1m/s, then retry navigation.
-
-- For "try to detect the cup 3 times":
-  Structure: RetryUntilSuccessful[DetectObject]
-  Actions: DetectObject
-  Retry detecting the cup up to 3 attempts (num_attempts="3").
-
-- For "patrol between kitchen and bedroom 5 times":
-  Structure: Repeat[Sequence[navigate_to_kitchen, navigate_to_bedroom]]
-  Actions: ComputePathToPose, FollowPath
-  Repeat patrol sequence 5 times (num_cycles="5"). Each cycle: navigate to kitchen, then navigate to bedroom.
-
-- For "search for the red ball by spinning":
-  Structure: Fallback[DetectObject, Sequence[SpinLeft, DetectObject]]
-  Actions: DetectObject, SpinLeft
-  Try to detect the red ball. If not found, spin left 180° and try detection again."""
-
-REWRITE_USER_TEMPLATE = """Transform this simple robot command into a detailed behavioral description:
-
-Command: {command}
-
-Provide the detailed description and required actions."""
+REWRITE_USER_TEMPLATE = """Command: {command}"""
 
 
 class QueryRewriter:

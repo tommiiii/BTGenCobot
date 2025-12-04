@@ -10,246 +10,192 @@ logger = logging.getLogger(__name__)
 
 def generate_restricted_grammar(allowed_actions: List[str], structure: Optional[str] = None, max_depth: int = 5) -> str:
     """
-    Generate a restricted EBNF grammar that allows specified actions with full control flow support.
+    Generate a restricted EBNF grammar using EXPLICIT syntax: <Action ID="NodeType" .../>.
     Uses depth-limited hierarchy to prevent degenerate infinite nesting.
-    
+    Defines specific ports per action type to prevent hallucination.
+
     Args:
         allowed_actions: List of allowed action names (e.g., ["SpinLeft", "BackUp", "DetectObject"])
-        structure: Optional structure hint (e.g., "Fallback", "Retry", "Repeat") to guide generation
+        structure: Optional structure hint (unused, kept for API compatibility)
         max_depth: Maximum nesting depth (default 5 levels)
-                        
+
     Returns:
-        Complete EBNF grammar string with the specified actions and control flow support
+        Complete EBNF grammar string with explicit Action/Condition syntax
     """
-    # Map action names to their grammar rules
-    action_rules = {
-        "ComputePathToPose": 'compute_path: "<ComputePathToPose" " " goal_attr " " path_attr (" " planner_id_attr)? (" " name_attr)? " "? "/>"',
-        "FollowPath": 'follow_path: "<FollowPath" " " path_attr (" " controller_id_attr)? (" " name_attr)? " "? "/>"',
-        "NavigateToPose": 'navigate_to_pose: "<NavigateToPose" " " goal_attr (" " behavior_tree_attr)? (" " name_attr)? " "? "/>"',
-        "SpinLeft": 'spin_left: "<SpinLeft" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
-        "SpinRight": 'spin_right: "<SpinRight" " " spin_dist_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
-        "DriveOnHeading": 'drive_on_heading: "<DriveOnHeading" " " dist_to_travel_attr " " speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
-        "BackUp": 'backup: "<BackUp" " " backup_dist_attr " " backup_speed_attr " " time_allowance_attr (" " name_attr)? " "? "/>"',
-        "Wait": 'wait: "<Wait" " " wait_duration_attr (" " name_attr)? " "? "/>"',
-        "DetectObject": 'detect_obj: "<DetectObject" " " object_description_attr " " detect_target_pose_attr " " detect_object_pose_attr " " detect_object_height_attr " " detect_object_width_attr (" " name_attr)? " "? "/>"',
-        "PickObject": 'pick_obj: "<PickObject" " " pick_target_pose_attr " " pick_object_height_attr " " pick_object_width_attr (" " name_attr)? " "? "/>"',
-        "PlaceObject": 'place_obj: "<PlaceObject" " " place_target_pose_attr (" " name_attr)? " "? "/>"',
-        "ClearEntireCostmap": 'clear_costmap: "<ClearEntireCostmap" (" " costmap_attr)? (" " name_attr)? " "? "/>"'
+    # All known action nodes with their valid ports
+    ACTION_PORTS = {
+        "SpinLeft": ["spin_dist", "time_allowance"],
+        "SpinRight": ["spin_dist", "time_allowance"],
+        "DriveOnHeading": ["dist_to_travel", "speed", "time_allowance"],
+        "BackUp": ["backup_dist", "backup_speed", "time_allowance"],
+        "Wait": ["wait_duration"],
+        "ComputePathToPose": ["goal", "path", "planner_id"],
+        "FollowPath": ["path", "controller_id"],
+        "NavigateToPose": ["goal"],
+        "DetectObject": ["object_description", "target_pose"],
+        "PickObject": ["object_description"],
+        "PlaceObject": ["place_description"],
+        "ClearEntireCostmap": [],
     }
-    
-    # Map action names to their rule names for the action_node definition
-    action_rule_names = {
-        "ComputePathToPose": "compute_path",
-        "FollowPath": "follow_path",
-        "NavigateToPose": "navigate_to_pose",
-        "SpinLeft": "spin_left",
-        "SpinRight": "spin_right",
-        "DriveOnHeading": "drive_on_heading",
-        "BackUp": "backup",
-        "Wait": "wait",
-        "DetectObject": "detect_obj",
-        "PickObject": "pick_obj",
-        "PlaceObject": "place_obj",
-        "ClearEntireCostmap": "clear_costmap"
+
+    KNOWN_ACTIONS = set(ACTION_PORTS.keys())
+
+    # All known condition nodes with their valid ports
+    CONDITION_PORTS = {
+        "GoalReached": [],
+        "IsStuck": [],
+        "IsBatteryLow": [],
+        "GoalUpdated": [],
+        "TimeExpired": ["seconds"],
+        "DistanceTraveled": ["distance"],
     }
-    
-    # Condition node rules
-    condition_rules = {
-        "GoalReached": 'goal_reached: "<GoalReached" ((" " | "\\t") attribute)* " "? "/>"',
-        "IsStuck": 'is_stuck: "<IsStuck" ((" " | "\\t") attribute)* " "? "/>"',
-        "IsBatteryLow": 'is_battery_low: "<IsBatteryLow" ((" " | "\\t") attribute)* " "? "/>"',
-        "GoalUpdated": 'goal_updated: "<GoalUpdated" ((" " | "\\t") attribute)* " "? "/>"',
-        "TimeExpired": 'time_expired: "<TimeExpired" " " time_expired_attr ((" " | "\\t") attribute)* " "? "/>"',
-        "DistanceTraveled": 'distance_traveled: "<DistanceTraveled" " " distance_attr ((" " | "\\t") attribute)* " "? "/>"'
-    }
-    
-    condition_rule_names = {
-        "GoalReached": "goal_reached",
-        "IsStuck": "is_stuck",
-        "IsBatteryLow": "is_battery_low",
-        "GoalUpdated": "goal_updated",
-        "TimeExpired": "time_expired",
-        "DistanceTraveled": "distance_traveled"
-    }
-    
+
+    KNOWN_CONDITIONS = set(CONDITION_PORTS.keys())
+
     if not allowed_actions:
         raise ValueError("No actions provided in allowed_actions")
-    
-    # Get unique actions and their rule definitions
-    unique_actions = list(dict.fromkeys(allowed_actions))  # Preserves order, removes duplicates
-    allowed_action_definitions = []
-    unique_action_rule_names = []
-    
-    # Also check for condition nodes in allowed_actions
-    allowed_condition_definitions = []
-    unique_condition_rule_names = []
-    
-    for action in unique_actions:
-        if action in action_rules:
-            unique_action_rule_names.append(action_rule_names[action])
-            allowed_action_definitions.append(action_rules[action])
-        elif action in condition_rules:
-            unique_condition_rule_names.append(condition_rule_names[action])
-            allowed_condition_definitions.append(condition_rules[action])
+
+    # Separate actions and conditions from input (deduplicate)
+    unique_actions = []
+    unique_conditions = []
+
+    for item in allowed_actions:
+        if item in KNOWN_ACTIONS:
+            if item not in unique_actions:
+                unique_actions.append(item)
+        elif item in KNOWN_CONDITIONS:
+            if item not in unique_conditions:
+                unique_conditions.append(item)
         else:
-            logger.warning(f"Unknown action/condition: {action}, skipping")
-    
-    if not unique_action_rule_names and not unique_condition_rule_names:
-        raise ValueError(f"No valid actions/conditions found in allowed_actions: {allowed_actions}")
-    
-    # Build action_node rule
-    if unique_action_rule_names:
-        action_node_rule = f'action_node: {" | ".join(unique_action_rule_names)}'
-    else:
-        action_node_rule = 'action_node: wait  // fallback'
-        allowed_action_definitions.append(action_rules["Wait"])
-    
-    # Build condition_node rule
-    has_conditions = bool(unique_condition_rule_names)
-    if has_conditions:
-        condition_node_rule = f'condition_node: {" | ".join(unique_condition_rule_names)}'
-    else:
-        condition_node_rule = '// No conditions needed'
-    
-    logger.info(f"Generated grammar for actions: {unique_action_rule_names}, conditions: {unique_condition_rule_names}, structure: {structure}")
-    
-    # Base grammar structure with depth-limited control flow support
-    # Supports both full XML document format and BehaviorTree-only format (matches finetuned model output)
-    grammar = r"""// BehaviorTree XML Grammar - Dynamically Generated with Depth-Limited Control Flow
-// Supports nested control nodes with maximum depth to prevent infinite nesting
+            logger.warning(f"Unknown action/condition: {item}, skipping")
 
-// Two possible start formats: full XML document or just BehaviorTree element
-start: full_document | behavior_tree_only
+    if not unique_actions:
+        raise ValueError(f"No valid actions found in allowed_actions: {allowed_actions}")
 
-// Full document with XML declaration
-full_document: xml_decl root
+    # Only use conditions if explicitly specified - don't default to all
+    # Conditions in sequences cause failures if their state doesn't match
 
-xml_decl: "<?xml" WS "version" WS? "=" WS? version_val "?>"
+    logger.info(f"Generated explicit grammar for actions: {unique_actions}, conditions: {unique_conditions}")
+
+    # Collect all unique ports needed (to avoid duplicate rule definitions)
+    all_ports = set()
+    for action in unique_actions:
+        all_ports.update(ACTION_PORTS.get(action, []))
+    for condition in unique_conditions:
+        all_ports.update(CONDITION_PORTS.get(condition, []))
+
+    # Base grammar with explicit syntax
+    grammar = r"""// BehaviorTree XML Grammar - EXPLICIT SYNTAX (Restricted)
+// Uses <Action ID="NodeType" .../> format to match model output
+
+start: xml_decl? root
+
+xml_decl: "<?xml" WS "version" WS? "=" WS? version_val WS? "?>"
 version_val: "\"1.0\""
 
-root: "<root" " " "BTCPP_format=\"4\"" " " main_tree_attr ((" " | "\t") attribute)* " "? ">" WS? behavior_tree WS? "</root>"
-main_tree_attr: "main_tree_to_execute=\"" att_value_content "\""
+root: "<root" " " "BTCPP_format=\"4\"" " " main_tree_attr " "? ">" WS? behavior_tree WS? "</root>"
+main_tree_attr: "main_tree_to_execute=\"" tree_id "\""
+tree_id: /[A-Za-z_][A-Za-z0-9_]*/
 
-// BehaviorTree element only (matches finetuned model output)
-behavior_tree_only: behavior_tree
+behavior_tree: "<BehaviorTree" " " bt_id_attr " "? ">" WS? bt_content WS? "</BehaviorTree>"
+bt_id_attr: "ID=\"" tree_id "\""
 
-behavior_tree: "<BehaviorTree" ((" " | "\t") attribute)* " "? ">" WS? bt_content WS? "</BehaviorTree>"
-
-// Root level content - Level 1
 bt_content: node_l1
 
 """
-    
+
     # Build node definitions for each level
-    # Levels 1 through max_depth-1 can contain control/decorator nodes
-    # Level max_depth (leaf level) only contains actions and conditions
+    has_conditions = len(unique_conditions) > 0
     
     for level in range(1, max_depth + 1):
         is_leaf_level = (level == max_depth)
         next_level = level + 1
-        
-        # Build node_l{level} definition
+
         node_options = ["action_node"]
         if has_conditions:
             node_options.append("condition_node")
-        
+
         if not is_leaf_level:
             node_options.extend([f"control_l{level}", f"decorator_l{level}"])
-        
-        grammar += f"// Level {level}" + (" (leaf level - no more nesting)" if is_leaf_level else "") + "\n"
+
+        grammar += f"// Level {level}" + (" (leaf level)" if is_leaf_level else "") + "\n"
         grammar += f"node_l{level}: {' | '.join(node_options)}\n\n"
-        
-        # Add control and decorator nodes for non-leaf levels
+
         if not is_leaf_level:
             child_node = f"node_l{next_level}"
             child_list = f"node_list_l{next_level}"
-            
-            # Control nodes at this level
-            grammar += f"// Level {level} control nodes\n"
+
+            # Control nodes - with optional name attribute only
             grammar += f'control_l{level}: sequence_l{level} | fallback_l{level} | parallel_l{level} | reactive_seq_l{level} | reactive_fb_l{level}\n'
-            grammar += f'sequence_l{level}: "<Sequence" ((" " | "\\t") attribute)* " "? ">" WS? {child_list} WS? "</Sequence>"\n'
-            grammar += f'fallback_l{level}: "<Fallback" ((" " | "\\t") attribute)* " "? ">" WS? {child_list} WS? "</Fallback>"\n'
-            grammar += f'parallel_l{level}: "<Parallel" ((" " | "\\t") attribute)* " "? ">" WS? {child_list} WS? "</Parallel>"\n'
-            grammar += f'reactive_seq_l{level}: "<ReactiveSequence" ((" " | "\\t") attribute)* " "? ">" WS? {child_list} WS? "</ReactiveSequence>"\n'
-            grammar += f'reactive_fb_l{level}: "<ReactiveFallback" ((" " | "\\t") attribute)* " "? ">" WS? {child_list} WS? "</ReactiveFallback>"\n\n'
-            
-            # Decorator nodes at this level
-            grammar += f"// Level {level} decorator nodes\n"
-            grammar += f'decorator_l{level}: inverter_l{level} | force_success_l{level} | force_failure_l{level} | repeat_l{level} | retry_l{level} | keep_running_l{level} | rate_ctrl_l{level}\n'
-            grammar += f'inverter_l{level}: "<Inverter" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</Inverter>"\n'
-            grammar += f'force_success_l{level}: "<ForceSuccess" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</ForceSuccess>"\n'
-            grammar += f'force_failure_l{level}: "<ForceFailure" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</ForceFailure>"\n'
-            grammar += f'repeat_l{level}: "<Repeat" " " num_cycles_attr ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</Repeat>"\n'
-            grammar += f'retry_l{level}: "<RetryUntilSuccessful" " " num_attempts_attr ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</RetryUntilSuccessful>"\n'
-            grammar += f'keep_running_l{level}: "<KeepRunningUntilFailure" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</KeepRunningUntilFailure>"\n'
-            grammar += f'rate_ctrl_l{level}: "<RateController" " " hz_attr ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</RateController>"\n\n'
-            
-            # Node list at next level
-            grammar += f"// Node list for level {next_level}\n"
+            grammar += f'sequence_l{level}: "<Sequence" name_attr? ">" WS? {child_list} WS? "</Sequence>"\n'
+            grammar += f'fallback_l{level}: "<Fallback" name_attr? ">" WS? {child_list} WS? "</Fallback>"\n'
+            grammar += f'parallel_l{level}: "<Parallel" name_attr? ">" WS? {child_list} WS? "</Parallel>"\n'
+            grammar += f'reactive_seq_l{level}: "<ReactiveSequence" name_attr? ">" WS? {child_list} WS? "</ReactiveSequence>"\n'
+            grammar += f'reactive_fb_l{level}: "<ReactiveFallback" name_attr? ">" WS? {child_list} WS? "</ReactiveFallback>"\n\n'
+
+            # Decorator nodes
+            grammar += f'decorator_l{level}: inverter_l{level} | force_success_l{level} | force_failure_l{level} | repeat_l{level} | retry_l{level} | keep_running_l{level}\n'
+            grammar += f'inverter_l{level}: "<Inverter" name_attr? ">" WS? {child_node} WS? "</Inverter>"\n'
+            grammar += f'force_success_l{level}: "<ForceSuccess" name_attr? ">" WS? {child_node} WS? "</ForceSuccess>"\n'
+            grammar += f'force_failure_l{level}: "<ForceFailure" name_attr? ">" WS? {child_node} WS? "</ForceFailure>"\n'
+            grammar += f'repeat_l{level}: "<Repeat" " " num_cycles_attr name_attr? ">" WS? {child_node} WS? "</Repeat>"\n'
+            grammar += f'retry_l{level}: "<RetryUntilSuccessful" " " num_attempts_attr name_attr? ">" WS? {child_node} WS? "</RetryUntilSuccessful>"\n'
+            grammar += f'keep_running_l{level}: "<KeepRunningUntilFailure" name_attr? ">" WS? {child_node} WS? "</KeepRunningUntilFailure>"\n\n'
+
+            # Node list
             grammar += f'{child_list}: {child_node} (WS? {child_node})*\n\n'
-    
-    # Add condition node rule if we have conditions
-    if has_conditions:
-        grammar += f"// Condition nodes\n{condition_node_rule}\n\n"
-        grammar += "// Condition definitions\n"
-        grammar += "\n".join(allowed_condition_definitions) + "\n\n"
-    
-    # Add action node rule
-    grammar += f"// Action nodes (leaf nodes)\n{action_node_rule}\n\n"
-    
-    # Add all the allowed action rule definitions
-    grammar += "// Action definitions\n"
-    grammar += "\n".join(allowed_action_definitions) + "\n\n"
-    
-    # Add attribute definitions - using raw string
-    grammar += r"""// Specific parameter definitions for actions
-goal_attr: "goal" " "? "=" " "? "\"" goal_var "\""
-path_attr: "path" " "? "=" " "? "\"" path_var "\""
-planner_id_attr: "planner_id" " "? "=" " "? "\"" att_value_content "\""
-controller_id_attr: "controller_id" " "? "=" " "? "\"" att_value_content "\""
-behavior_tree_attr: "behavior_tree" " "? "=" " "? "\"" att_value_content "\""
-spin_dist_attr: "spin_dist" " "? "=" " "? "\"" numeric_value "\""
-dist_to_travel_attr: "dist_to_travel" " "? "=" " "? "\"" numeric_value "\""
-speed_attr: "speed" " "? "=" " "? "\"" numeric_value "\""
-backup_dist_attr: "backup_dist" " "? "=" " "? "\"" numeric_value "\""
-backup_speed_attr: "backup_speed" " "? "=" " "? "\"" numeric_value "\""
-time_allowance_attr: "time_allowance" " "? "=" " "? "\"" numeric_value "\""
-wait_duration_attr: "wait_duration" " "? "=" " "? "\"" numeric_value "\""
-object_description_attr: "object_description" " "? "=" " "? "\"" att_value_content "\""
-detect_target_pose_attr: "target_pose" " "? "=" " "? "\"{goal}\""
-detect_object_pose_attr: "object_pose" " "? "=" " "? "\"{object_pose}\""
-detect_object_height_attr: "object_height" " "? "=" " "? "\"{object_height}\""
-detect_object_width_attr: "object_width" " "? "=" " "? "\"{object_width}\""
-pick_target_pose_attr: "target_pose" " "? "=" " "? "\"{object_pose}\""
-pick_object_height_attr: "object_height" " "? "=" " "? "\"{object_height}\""
-pick_object_width_attr: "object_width" " "? "=" " "? "\"{object_width}\""
-place_target_pose_attr: "target_pose" " "? "=" " "? "\"{object_pose}\""
-costmap_attr: "costmap" " "? "=" " "? "\"" att_value_content "\""
-name_attr: "name" " "? "=" " "? "\"" att_value_content "\""
 
-// Decorator node attributes
-num_cycles_attr: "num_cycles" " "? "=" " "? "\"" numeric_value "\""
-num_attempts_attr: "num_attempts" " "? "=" " "? "\"" numeric_value "\""
-hz_attr: "hz" " "? "=" " "? "\"" numeric_value "\""
+    # Generate specific action rules with their exact ports
+    grammar += "// Action nodes - each with specific allowed ports\n"
+    action_alternatives = []
+    for action in unique_actions:
+        ports = ACTION_PORTS.get(action, [])
+        rule_name = f'{action.lower()}_action'
+        action_alternatives.append(rule_name)
+        if ports:
+            # Build optional port attributes (each can appear 0 or 1 time)
+            port_attrs = " ".join([f'{p}_attr?' for p in ports])
+            grammar += f'{rule_name}: "<Action" " " "ID=\\"{action}\\"" " "? {port_attrs} "/>"\n'
+        else:
+            grammar += f'{rule_name}: "<Action" " " "ID=\\"{action}\\"" " "? "/>"\n'
 
-// Condition node attributes
-time_expired_attr: "seconds" " "? "=" " "? "\"" numeric_value "\""
-distance_attr: "distance" " "? "=" " "? "\"" numeric_value "\""
+    grammar += f"action_node: {' | '.join(action_alternatives)}\n\n"
 
-// Variable name constraints - force specific variable names
-goal_var: "{goal}"
-path_var: "{path}"
+    # Generate specific condition rules with their exact ports (only if conditions exist)
+    if unique_conditions:
+        grammar += "// Condition nodes - each with specific allowed ports\n"
+        condition_alternatives = []
+        for condition in unique_conditions:
+            ports = CONDITION_PORTS.get(condition, [])
+            rule_name = f'{condition.lower()}_condition'
+            condition_alternatives.append(rule_name)
+            if ports:
+                port_attrs = " ".join([f'{p}_attr?' for p in ports])
+                grammar += f'{rule_name}: "<Condition" " " "ID=\\"{condition}\\"" " "? {port_attrs} "/>"\n'
+            else:
+                grammar += f'{rule_name}: "<Condition" " " "ID=\\"{condition}\\"" " "? "/>"\n'
 
-numeric_value: /[0-9]+\.?[0-9]*/
-att_value_content: /[^<&";]*/
+        grammar += f"condition_node: {' | '.join(condition_alternatives)}\n\n"
 
-// Generic attribute for control nodes and root elements
-attribute: att_name " "? "=" " "? "\"" att_value_content "\""
-att_name: /[a-zA-Z_][a-zA-Z0-9_]*/
+    # Define all port attribute rules once (no duplicates)
+    grammar += "// Port attribute definitions\n"
+    for port in sorted(all_ports):
+        grammar += f'{port}_attr: " " "{port}=\\"" attr_value "\\""\n'
 
-WS: /[ \t\n\r]+/
+    grammar += """
+// Common attributes
+name_attr: " " "name=\"" attr_value "\""
+
+// Decorator attributes
+num_cycles_attr: "num_cycles=\"" /[0-9]+/ "\""
+num_attempts_attr: "num_attempts=\"" /[0-9]+/ "\""
+
+// Attribute value (no quotes, angle brackets, or ampersands)
+attr_value: /[^<&"]*/
+
+WS: /[ \\t\\n\\r]+/
 """
-    
+
     return grammar
 
 

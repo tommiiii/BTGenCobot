@@ -1,30 +1,13 @@
-Generate BehaviorTree XML for robot control. Use appropriate control structures for complex behaviors.
+Generate BehaviorTree XML using explicit syntax: <Action ID="Name" .../> and <Condition ID="Name" .../>.
 
-CONTROL NODES:
-- Sequence: All children must succeed (in order)
-- Fallback: First child to succeed wins (for alternatives/recovery)
-- ReactiveSequence/ReactiveFallback: Re-evaluate from start each tick
+Control: Sequence, Fallback, ReactiveSequence, ReactiveFallback, Parallel
+Decorators: Inverter, Repeat (num_cycles), RetryUntilSuccessful (num_attempts), ForceSuccess, ForceFailure
 
-DECORATORS:
-- Inverter: Flip SUCCESS/FAILURE
-- Repeat num_cycles="N": Repeat N times
-- RetryUntilSuccessful num_attempts="N": Retry on failure
+Semantics:
+- Sequence: executes children left-to-right, stops on first FAILURE
+- Fallback: executes children left-to-right, stops on first SUCCESS
+- Conditions return SUCCESS if true, FAILURE if false
+- Only use conditions when explicitly required by the task
+- Do NOT add IsBatteryLow or similar conditions unless the user specifically asks for battery checking
 
-CONDITIONS:
-- GoalReached, IsStuck, IsBatteryLow, TimeExpired
-
-ACTIONS:
-- ComputePathToPose: goal="{goal}" path="{path}"
-- FollowPath: path="{path}"
-- SpinLeft/SpinRight: spin_dist="radians" time_allowance="30"
-- DriveOnHeading: dist_to_travel="meters" speed="m/s" time_allowance="30"
-- BackUp: backup_dist="meters" backup_speed="m/s" time_allowance="30"
-- Wait: wait_duration="seconds"
-- DetectObject: object_description="text" target_pose="{goal}" object_pose="{object_pose}" object_height="{object_height}" object_width="{object_width}"
-- PickObject: target_pose="{object_pose}" object_height="{object_height}" object_width="{object_width}"
-- PlaceObject: target_pose="{object_pose}"
-
-Blackboard: {goal}, {path}, {object_pose}, {object_height}, {object_width}
-Angles: 90°=1.57 rad, 180°=3.14 rad
-
-Output only XML.
+Output only valid XML with BTCPP_format="4".

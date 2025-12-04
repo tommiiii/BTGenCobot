@@ -1,34 +1,20 @@
 Actions:
-- ComputePathToPose (goal, path, planner_id)
-- FollowPath (path, controller_id)
-- SpinLeft (spin_dist, time_allowance)
-- SpinRight (spin_dist, time_allowance)
-- DriveOnHeading (dist_to_travel, speed, time_allowance)
-- BackUp (backup_dist, backup_speed, time_allowance)
-- Wait (wait_duration)
-- DetectObject (object_description, target_pose, object_pose, object_height, object_width)
-- PickObject (target_pose, object_height, object_width)
-- PlaceObject (target_pose)
-- ClearEntireCostmap (costmap)
+- SpinLeft (spin_dist, time_allowance) - rotate left
+- SpinRight (spin_dist, time_allowance) - rotate right
+- DriveOnHeading (dist_to_travel, speed, time_allowance) - move forward
+- BackUp (backup_dist, backup_speed, time_allowance) - move backward
+- Wait (wait_duration) - pause execution
+- ComputePathToPose (goal, path) - plan path, output to {path}
+- FollowPath (path) - execute path from {path}
+- NavigateToPose (goal) - navigate directly to goal pose
+- DetectObject (object_description, target_pose) - find object, output pose to {target_pose}. REQUIRED: object_description
+- PickObject (object_description) - pick up object. REQUIRED: object_description
+- PlaceObject (place_description) - place held object. REQUIRED: place_description (e.g., "table", "bin")
+- ClearEntireCostmap - clear navigation costmap
 
-Control Nodes:
-- Sequence: Execute all children in order
-- Fallback: Try children until one succeeds
-- ReactiveSequence: Re-evaluate from first child each tick
-- ReactiveFallback: Re-evaluate from first child each tick
-- Parallel: Execute children simultaneously
-
-Decorator Nodes:
-- Inverter: Invert child result
-- Repeat (num_cycles): Repeat child N times
-- RetryUntilSuccessful (num_attempts): Retry child until success
-- ForceSuccess: Always return SUCCESS
-- ForceFailure: Always return FAILURE
-- KeepRunningUntilFailure: Keep running until child fails
-
-Condition Nodes:
-- GoalReached: Check if goal reached
-- IsStuck: Check if robot stuck
-- IsBatteryLow: Check battery level
-- TimeExpired (seconds): Check if time exceeded
-- DistanceTraveled (distance): Check distance moved
+Conditions (use ONLY when explicitly requested by the user - do NOT add unless asked):
+- GoalReached
+- IsStuck
+- TimeExpired (seconds)
+- DistanceTraveled (distance)
+- GoalUpdated

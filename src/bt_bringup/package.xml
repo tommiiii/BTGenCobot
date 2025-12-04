@@ -9,13 +9,25 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <!-- Launch file dependencies -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- Nav2 stack -->
   <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>nav2_amcl</exec_depend>
+
+  <!-- Tools -->
   <exec_depend>foxglove_bridge</exec_depend>
+
+  <!-- Project packages -->
   <exec_depend>bt_nav2_plugins</exec_depend>
   <exec_depend>bt_text_interface</exec_depend>
   <exec_depend>vision_services</exec_depend>
+  <exec_depend>manipulator_control</exec_depend>
   <exec_depend>turtlebot3_manipulation_description</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

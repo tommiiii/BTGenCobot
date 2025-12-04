@@ -115,7 +115,7 @@ class HealthResponse(BaseModel):
     """Response model for health check"""
     status: str = Field(..., description="Server status")
     model_loaded: bool = Field(..., description="Whether model is loaded")
-    backend: str = Field("mlx", description="Inference backend")
+    backend: str = Field("transformers", description="Inference backend")
     uptime_seconds: int = Field(..., description="Server uptime in seconds")
     total_requests: int = Field(0, description="Total number of requests processed")
     successful_requests: int = Field(0, description="Number of successful requests")
@@ -151,7 +151,7 @@ async def health_check():
     return HealthResponse(
         status="healthy" if state.model_loaded else "unhealthy",
         model_loaded=state.model_loaded,
-        backend="mlx",
+        backend="transformers",
         uptime_seconds=uptime,
         total_requests=state.total_requests,
         successful_requests=state.successful_requests,

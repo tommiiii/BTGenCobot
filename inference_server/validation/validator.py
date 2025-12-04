@@ -206,6 +206,9 @@ def validate_action_space(xml_string: str) -> Tuple[bool, list]:
         'GoalUpdater'
     }
     
+    # Explicit syntax wrappers - validate their ID attribute instead of tag
+    EXPLICIT_WRAPPERS = {'Action', 'Condition', 'SubTree'}
+    
     ALLOWED_NODES = (CONTROL_NODES | NAV2_ACTIONS | RECOVERY_ACTIONS | 
                      MANIPULATION_ACTIONS | UTILITY_ACTIONS | 
                      CONDITION_NODES | DECORATOR_NODES)
@@ -216,7 +219,16 @@ def validate_action_space(xml_string: str) -> Tuple[bool, list]:
         def check_action_node(elem, path=""):
             node_path = f"{path}/{elem.tag}"
 
-            if elem.tag not in ALLOWED_NODES and elem.tag not in {'BehaviorTree', 'root'}:
+            # Handle explicit syntax: <Action ID="SpinLeft" /> or <Condition ID="GoalReached" />
+            if elem.tag in EXPLICIT_WRAPPERS:
+                node_id = elem.get('ID')
+                if node_id and node_id not in ALLOWED_NODES:
+                    issues.append(
+                        f"Invalid {elem.tag.lower()} '{node_id}' at {node_path}. "
+                        f"Not in allowed action space."
+                    )
+            # Handle compact syntax: <SpinLeft /> or unknown tags
+            elif elem.tag not in ALLOWED_NODES and elem.tag not in {'BehaviorTree', 'root'}:
                 issues.append(
                     f"Invalid action '{elem.tag}' at {node_path}. "
                     f"Not in allowed action space."
