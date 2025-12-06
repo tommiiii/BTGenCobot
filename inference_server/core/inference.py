@@ -133,14 +133,14 @@ bt_content: node_l1
             grammar += f'reactive_seq_l{level}: "<ReactiveSequence" name_attr? ">" WS? {child_list} WS? "</ReactiveSequence>"\n'
             grammar += f'reactive_fb_l{level}: "<ReactiveFallback" name_attr? ">" WS? {child_list} WS? "</ReactiveFallback>"\n\n'
 
-            # Decorator nodes
+            # Decorator nodes - use generic attribute pattern like static grammar
             grammar += f'decorator_l{level}: inverter_l{level} | force_success_l{level} | force_failure_l{level} | repeat_l{level} | retry_l{level} | keep_running_l{level}\n'
-            grammar += f'inverter_l{level}: "<Inverter" name_attr? ">" WS? {child_node} WS? "</Inverter>"\n'
-            grammar += f'force_success_l{level}: "<ForceSuccess" name_attr? ">" WS? {child_node} WS? "</ForceSuccess>"\n'
-            grammar += f'force_failure_l{level}: "<ForceFailure" name_attr? ">" WS? {child_node} WS? "</ForceFailure>"\n'
-            grammar += f'repeat_l{level}: "<Repeat" " " num_cycles_attr name_attr? ">" WS? {child_node} WS? "</Repeat>"\n'
-            grammar += f'retry_l{level}: "<RetryUntilSuccessful" " " num_attempts_attr name_attr? ">" WS? {child_node} WS? "</RetryUntilSuccessful>"\n'
-            grammar += f'keep_running_l{level}: "<KeepRunningUntilFailure" name_attr? ">" WS? {child_node} WS? "</KeepRunningUntilFailure>"\n\n'
+            grammar += f'inverter_l{level}: "<Inverter" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</Inverter>"\n'
+            grammar += f'force_success_l{level}: "<ForceSuccess" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</ForceSuccess>"\n'
+            grammar += f'force_failure_l{level}: "<ForceFailure" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</ForceFailure>"\n'
+            grammar += f'repeat_l{level}: "<Repeat" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</Repeat>"\n'
+            grammar += f'retry_l{level}: "<RetryUntilSuccessful" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</RetryUntilSuccessful>"\n'
+            grammar += f'keep_running_l{level}: "<KeepRunningUntilFailure" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</KeepRunningUntilFailure>"\n\n'
 
             # Node list
             grammar += f'{child_list}: {child_node} (WS? {child_node})*\n\n'
@@ -183,12 +183,13 @@ bt_content: node_l1
         grammar += f'{port}_attr: " " "{port}=\\"" attr_value "\\""\n'
 
     grammar += """
-// Common attributes
-name_attr: " " "name=\"" attr_value "\""
+// Generic attribute - any name="value" pair (matches static grammar)
+attribute: att_name " "? "=" " "? "\\"" att_value_content "\\""
+att_name: /[a-zA-Z_][a-zA-Z0-9_]*/
+att_value_content: /[^<&"]*/
 
-// Decorator attributes
-num_cycles_attr: "num_cycles=\"" /[0-9]+/ "\""
-num_attempts_attr: "num_attempts=\"" /[0-9]+/ "\""
+// Common attributes
+name_attr: " " "name=\\"" attr_value "\\""
 
 // Attribute value (no quotes, angle brackets, or ampersands)
 attr_value: /[^<&"]*/

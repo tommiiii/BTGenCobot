@@ -502,10 +502,12 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     // Project to ground plane (z=0 for 2D navigation)
     pose_map.pose.position.z = 0.0;
     
-    // Nav2 has xy_goal_tolerance of 0.25m, so it may stop short of the goal.
-    // Set goal at object position - Nav2 will stop when within tolerance,
-    // which should put the robot close enough for the arm to reach.
-    const double approach_offset = 0.0;  // Navigate directly to object position
+    // Set navigation goal at a distance where the camera can still see the object clearly.
+    // The pick/place nodes will do fine adjustments using direct cmd_vel to get within arm reach.
+    // This offset should be large enough that:
+    // - The object remains visible and recognizable in the camera frame
+    // - The robot has room to re-detect and adjust during pick/place
+    const double approach_offset = 0.45;  // Nav2 goal 45cm from object
     
     if (distance_to_object > approach_offset) {
       // Normalize direction vector and place goal close to object

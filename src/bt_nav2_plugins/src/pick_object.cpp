@@ -338,18 +338,14 @@ BT::NodeStatus PickObject::onRunning()
 
     case PickState::APPROACHING:
     {
-      // Final approach: drive forward slowly using direct cmd_vel, bypassing Nav2 costmap
-      // This is needed because Nav2 won't let us get close to objects in the costmap
+      // Final approach: drive forward until robot is close enough to the object
+      // Use TF to get current robot position and calculate distance to object
 
-      // Calculate how long we've been approaching
       double elapsed = (node_->now() - approach_start_time_).seconds();
-      double distance_to_travel = detected_depth_ - MIN_APPROACH_DISTANCE;
-      double expected_duration = distance_to_travel / APPROACH_VELOCITY;
 
-      // Safety timeout: don't approach for more than 10 seconds
-      const double MAX_APPROACH_TIME = 10.0;
+      // Safety timeout
+      const double MAX_APPROACH_TIME = 15.0;
       if (elapsed > MAX_APPROACH_TIME) {
-        // Stop the robot
         geometry_msgs::msg::Twist stop_msg;
         cmd_vel_pub_->publish(stop_msg);
 
@@ -361,42 +357,53 @@ BT::NodeStatus PickObject::onRunning()
         return BT::NodeStatus::RUNNING;
       }
 
-      if (elapsed < expected_duration) {
-        // Keep moving forward
+      // Get current robot position in map frame
+      geometry_msgs::msg::TransformStamped robot_transform;
+      try {
+        robot_transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_WARN_THROTTLE(
+          node_->get_logger(),
+          *node_->get_clock(),
+          1000,
+          "PickObject: Could not get robot position: %s", ex.what());
+        // Keep moving if we can't get position
         geometry_msgs::msg::Twist cmd_vel;
         cmd_vel.linear.x = APPROACH_VELOCITY;
         cmd_vel_pub_->publish(cmd_vel);
-
-        RCLCPP_INFO_THROTTLE(
-          node_->get_logger(),
-          *node_->get_clock(),
-          500,
-          "PickObject: Approaching... %.2fs / %.2fs (distance: %.2fm)",
-          elapsed, expected_duration, distance_to_travel);
-
         return BT::NodeStatus::RUNNING;
       }
 
-      // Approach complete - stop the robot
-      geometry_msgs::msg::Twist stop_msg;
-      cmd_vel_pub_->publish(stop_msg);
+      // Calculate distance from robot to object (in 2D)
+      double dx = object_pose_.pose.position.x - robot_transform.transform.translation.x;
+      double dy = object_pose_.pose.position.y - robot_transform.transform.translation.y;
+      double distance_to_object = std::sqrt(dx * dx + dy * dy);
 
-      RCLCPP_INFO(
+      RCLCPP_INFO_THROTTLE(
         node_->get_logger(),
-        "PickObject: Final approach complete (moved %.2fm in %.2fs), re-detecting for accurate pose...",
-        distance_to_travel, elapsed);
+        *node_->get_clock(),
+        500,
+        "PickObject: Approaching... distance to object: %.3fm, target: %.2fm",
+        distance_to_object, MIN_APPROACH_DISTANCE);
 
-      // Re-detect after approach for accurate pose since we moved
-      state_ = PickState::WAITING_FOR_IMAGE;
-      detection_sent_ = false;
-      detection_received_ = false;
-      detection_response_.reset();
-      latest_image_.reset();
-      latest_depth_.reset();
-      operation_start_time_ = node_->now();
+      // Check if we're close enough
+      if (distance_to_object <= MIN_APPROACH_DISTANCE) {
+        geometry_msgs::msg::Twist stop_msg;
+        cmd_vel_pub_->publish(stop_msg);
 
-      // Mark that we've already done the approach to prevent looping
-      approach_done_ = true;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "PickObject: Approach complete, distance to object: %.3fm",
+          distance_to_object);
+
+        state_ = PickState::PICKING;
+        return BT::NodeStatus::RUNNING;
+      }
+
+      // Still need to move closer
+      geometry_msgs::msg::Twist cmd_vel;
+      cmd_vel.linear.x = APPROACH_VELOCITY;
+      cmd_vel_pub_->publish(cmd_vel);
 
       return BT::NodeStatus::RUNNING;
     }

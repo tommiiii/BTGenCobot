@@ -132,7 +132,11 @@ private:
   rclcpp::Time approach_start_time_;
   bool approach_done_;  // Flag to prevent infinite approach loops
   static constexpr double APPROACH_VELOCITY = 0.08;  // m/s - slow for safety
-  static constexpr double MIN_APPROACH_DISTANCE = 0.25;  // Minimum distance for arm reach
+  // Distance from robot base_link to place location for arm to reach
+  // Arm reaches ~0.286m from link1, which is at -0.092m from base_link
+  // So arm can reach ~0.19m in front of base_link
+  // Stop a bit further back to avoid collision and give arm room to maneuver
+  static constexpr double MIN_APPROACH_DISTANCE = 0.22;  // Stop 22cm from target
 };
 
 }  // namespace bt_nav2_plugins
