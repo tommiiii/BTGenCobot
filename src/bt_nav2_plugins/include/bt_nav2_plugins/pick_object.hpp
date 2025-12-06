@@ -14,6 +14,7 @@
 #include "tf2_ros/transform_listener.h"
 #include "btgencobot_interfaces/srv/manipulator_action.hpp"
 #include "btgencobot_interfaces/srv/detect_object.hpp"
+#include "geometry_msgs/msg/twist.hpp"
 
 namespace bt_nav2_plugins
 {
@@ -103,6 +104,7 @@ private:
   enum class PickState {
     WAITING_FOR_IMAGE,
     DETECTING,
+    APPROACHING,  // Final approach using direct cmd_vel
     PICKING,
     DONE
   };
@@ -122,9 +124,17 @@ private:
   geometry_msgs::msg::PoseStamped object_pose_;
   double object_height_;
   double object_width_;
-  
+
   // Timing
   rclcpp::Time operation_start_time_;
+
+  // Final approach - direct motion control bypassing Nav2 costmap
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
+  float detected_depth_;  // Object depth from detection (for approach distance)
+  rclcpp::Time approach_start_time_;
+  bool approach_done_;  // Flag to prevent infinite approach loops
+  static constexpr double APPROACH_VELOCITY = 0.08;  // m/s - slow for safety
+  static constexpr double MIN_APPROACH_DISTANCE = 0.25;  // Minimum distance for arm reach
 };
 
 }  // namespace bt_nav2_plugins

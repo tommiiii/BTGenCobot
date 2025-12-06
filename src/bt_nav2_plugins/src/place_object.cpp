@@ -60,7 +60,10 @@ PlaceObject::PlaceObject(
     sensor_qos,
     std::bind(&PlaceObject::cameraInfoCallback, this, std::placeholders::_1));
 
-  RCLCPP_INFO(node_->get_logger(), "PlaceObject BT node initialized with integrated detection");
+  // Publisher for direct motion control (final approach bypassing Nav2 costmap)
+  cmd_vel_pub_ = service_node_->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+
+  RCLCPP_INFO(node_->get_logger(), "PlaceObject BT node initialized with integrated detection and final approach");
 }
 
 BT::NodeStatus PlaceObject::onStart()
@@ -94,7 +97,9 @@ BT::NodeStatus PlaceObject::onStart()
   latest_image_.reset();
   latest_depth_.reset();
   has_camera_info_ = false;
-  
+  detected_depth_ = 0.0f;
+  approach_done_ = false;
+
   operation_start_time_ = node_->now();
 
   return BT::NodeStatus::RUNNING;
@@ -293,8 +298,90 @@ BT::NodeStatus PlaceObject::onRunning()
       // Compute place pose - slightly above the detected surface
       place_pose_ = computePlacePose(place_center_x, place_center_y, depth, "camera_rgb_optical_frame");
 
-      state_ = PlaceState::PLACING;
-      RCLCPP_INFO(node_->get_logger(), "PlaceObject: Detection complete, starting place...");
+      // Save depth for approach calculation
+      detected_depth_ = depth;
+
+      // Check if we need to approach closer (only if we haven't already approached)
+      if (!approach_done_ && detected_depth_ > MIN_APPROACH_DISTANCE) {
+        state_ = PlaceState::APPROACHING;
+        approach_start_time_ = node_->now();
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "PlaceObject: Place location at %.2fm, starting final approach to get within %.2fm",
+          detected_depth_, MIN_APPROACH_DISTANCE);
+      } else {
+        state_ = PlaceState::PLACING;
+        if (approach_done_) {
+          RCLCPP_INFO(node_->get_logger(), "PlaceObject: Approach already done, proceeding with place (depth: %.2fm)", detected_depth_);
+        } else {
+          RCLCPP_INFO(node_->get_logger(), "PlaceObject: Already close enough (%.2fm), starting place...", detected_depth_);
+        }
+      }
+      return BT::NodeStatus::RUNNING;
+    }
+
+    case PlaceState::APPROACHING:
+    {
+      // Final approach: drive forward slowly using direct cmd_vel, bypassing Nav2 costmap
+      // This is needed because Nav2 won't let us get close to objects in the costmap
+
+      // Calculate how long we've been approaching
+      double elapsed = (node_->now() - approach_start_time_).seconds();
+      double distance_to_travel = detected_depth_ - MIN_APPROACH_DISTANCE;
+      double expected_duration = distance_to_travel / APPROACH_VELOCITY;
+
+      // Safety timeout: don't approach for more than 10 seconds
+      const double MAX_APPROACH_TIME = 10.0;
+      if (elapsed > MAX_APPROACH_TIME) {
+        // Stop the robot
+        geometry_msgs::msg::Twist stop_msg;
+        cmd_vel_pub_->publish(stop_msg);
+
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "PlaceObject: Approach timeout after %.1fs, proceeding with place anyway",
+          elapsed);
+        state_ = PlaceState::PLACING;
+        return BT::NodeStatus::RUNNING;
+      }
+
+      if (elapsed < expected_duration) {
+        // Keep moving forward
+        geometry_msgs::msg::Twist cmd_vel;
+        cmd_vel.linear.x = APPROACH_VELOCITY;
+        cmd_vel_pub_->publish(cmd_vel);
+
+        RCLCPP_INFO_THROTTLE(
+          node_->get_logger(),
+          *node_->get_clock(),
+          500,
+          "PlaceObject: Approaching... %.2fs / %.2fs (distance: %.2fm)",
+          elapsed, expected_duration, distance_to_travel);
+
+        return BT::NodeStatus::RUNNING;
+      }
+
+      // Approach complete - stop the robot
+      geometry_msgs::msg::Twist stop_msg;
+      cmd_vel_pub_->publish(stop_msg);
+
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "PlaceObject: Final approach complete (moved %.2fm in %.2fs), re-detecting for accurate pose...",
+        distance_to_travel, elapsed);
+
+      // Re-detect after approach for accurate pose since we moved
+      state_ = PlaceState::WAITING_FOR_IMAGE;
+      detection_sent_ = false;
+      detection_received_ = false;
+      detection_response_.reset();
+      latest_image_.reset();
+      latest_depth_.reset();
+      operation_start_time_ = node_->now();
+
+      // Mark that we've already done the approach to prevent looping
+      approach_done_ = true;
+
       return BT::NodeStatus::RUNNING;
     }
 
@@ -376,6 +463,13 @@ BT::NodeStatus PlaceObject::onRunning()
 void PlaceObject::onHalted()
 {
   RCLCPP_INFO(node_->get_logger(), "PlaceObject: Halted");
+
+  // Stop the robot if we were approaching
+  if (state_ == PlaceState::APPROACHING) {
+    geometry_msgs::msg::Twist stop_msg;
+    cmd_vel_pub_->publish(stop_msg);
+  }
+
   state_ = PlaceState::WAITING_FOR_IMAGE;
   detection_sent_ = false;
   detection_received_ = false;
