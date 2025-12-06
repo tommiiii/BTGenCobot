@@ -661,12 +661,14 @@ class ManipulatorService(Node):
 
         # Wait for result using polling
         # Use generous timeout since simulation may run slower than real-time
+        # Force-based grasping can take longer as the gripper waits to stall
         result_future = goal_handle.get_result_async()
-        timeout = duration * 5 + 10.0  # 5x duration + 10s margin for slow simulation
+        base_timeout = 20.0 if force_grasp else 10.0  # Force grasp needs more time
+        timeout = duration * 5 + base_timeout
         start_time = time.time()
         while not result_future.done():
             if time.time() - start_time > timeout:
-                self.get_logger().error('Gripper command timed out')
+                self.get_logger().error(f'Gripper command timed out after {timeout:.1f}s')
                 return False
             time.sleep(0.1)
 

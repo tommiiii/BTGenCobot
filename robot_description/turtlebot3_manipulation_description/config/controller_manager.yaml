@@ -52,3 +52,11 @@ gripper_controller:
   ros__parameters:
     use_sim_time: True
     joint: gripper_left_joint
+    # Goal tolerance - how close to target position to consider "reached"
+    goal_tolerance: 0.005
+    # Allow stalling to return success (for force-based grasping)
+    allow_stalling: true
+    # Velocity threshold below which gripper is considered stalled
+    stall_velocity_threshold: 0.001
+    # Timeout for reaching goal
+    stall_timeout: 2.0

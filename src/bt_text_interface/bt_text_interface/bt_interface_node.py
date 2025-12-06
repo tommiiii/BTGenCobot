@@ -1,5 +1,4 @@
 """ROS2 Action Server for BehaviorTree Generation and Execution"""
-import asyncio
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -374,7 +373,7 @@ class BTInterfaceNode(Node):
 
             start_wait = time.time()
             while not send_goal_future.done() and (time.time() - start_wait) < 10.0:
-                await asyncio.sleep(0.05)
+                time.sleep(0.05)
 
             if not send_goal_future.done():
                 return False, 'Failed to send navigation goal (timeout)'
@@ -411,7 +410,7 @@ class BTInterfaceNode(Node):
                     self.publish_feedback(goal_handle, 'executing', progress, f'Executing BT... ({int(elapsed)}s elapsed)')
                     last_feedback_time = current_time
 
-                await asyncio.sleep(0.1)
+                time.sleep(0.1)
 
             result = get_result_future.result()
             if result.status == 4:

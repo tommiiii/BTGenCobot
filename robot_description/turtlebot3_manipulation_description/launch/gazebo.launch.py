@@ -227,9 +227,9 @@ def generate_launch_description():
         ]
     )
 
-    # Spawn controllers
+    # Spawn controllers - delays increased to ensure Gazebo and ros2_control are fully initialized
     spawn_joint_state_broadcaster_cmd = TimerAction(
-        period=4.0,
+        period=8.0,
         actions=[
             Node(
                 package='controller_manager',
@@ -241,7 +241,7 @@ def generate_launch_description():
     )
 
     spawn_imu_broadcaster_cmd = TimerAction(
-        period=5.0,
+        period=10.0,
         actions=[
             Node(
                 package='controller_manager',
@@ -253,7 +253,7 @@ def generate_launch_description():
     )
 
     spawn_arm_controller_cmd = TimerAction(
-        period=6.0,
+        period=12.0,
         actions=[
             Node(
                 package='controller_manager',
@@ -265,7 +265,7 @@ def generate_launch_description():
     )
 
     spawn_gripper_controller_cmd = TimerAction(
-        period=7.0,
+        period=14.0,
         actions=[
             Node(
                 package='controller_manager',

@@ -41,7 +41,7 @@ class Florence2Service(Node):
     def _declare_parameters(self):
         """Declare and load ROS parameters"""
         self.declare_parameter('use_mock', False)
-        self.declare_parameter('florence2_model', 'microsoft/Florence-2-base')
+        self.declare_parameter('florence2_model', 'microsoft/Florence-2-base-ft')
         self.declare_parameter('device', 'auto')
         self.declare_parameter('publish_debug_images', True)
 
@@ -182,17 +182,20 @@ class Florence2Service(Node):
             return self._detect_object(image, request.object_description)
 
     def _detect_object(self, image, text_prompt):
-        """Run Florence-2 open vocabulary detection to find objects matching text description"""
+        """Run Florence-2 open vocabulary detection to find the object matching text description"""
         try:
             # Convert to PIL Image
             pil_image = PILImage.fromarray(image)
 
             # Use Florence-2's Open Vocabulary Detection task
-            # This finds objects matching the natural language description
+            # This translates to: "Locate {text_prompt} in the image."
             task_prompt = '<OPEN_VOCABULARY_DETECTION>'
-            prompt = task_prompt + text_prompt
+            
+            # Clean up the prompt - replace underscores with spaces for natural language
+            clean_prompt = text_prompt.replace('_', ' ')
+            prompt = task_prompt + clean_prompt
 
-            self.get_logger().info(f'Using Florence-2 open vocabulary detection: "{text_prompt}"')
+            self.get_logger().info(f'Using Florence-2 OVD: "Locate {clean_prompt} in the image."')
             
             # Prepare inputs
             inputs = self.florence2_processor(
@@ -201,15 +204,15 @@ class Florence2Service(Node):
                 return_tensors="pt"
             ).to(self.device, self.florence2_model.dtype)
 
-            # Generate detections (use greedy decoding, no beam search for stability)
+            # Generate detection
             with torch.no_grad():
                 generated_ids = self.florence2_model.generate(
                     input_ids=inputs["input_ids"],
                     pixel_values=inputs["pixel_values"],
-                    max_new_tokens=1024,
-                    num_beams=1,  # Explicitly disable beam search
-                    use_cache=False,  # Disable KV cache to avoid past_key_values bug
-                    do_sample=False
+                    max_new_tokens=256,
+                    num_beams=1,
+                    do_sample=False,
+                    use_cache=False,
                 )
 
             # Decode results
@@ -218,6 +221,8 @@ class Florence2Service(Node):
                 skip_special_tokens=False
             )[0]
 
+            self.get_logger().info(f'Florence-2 generated text: {generated_text}')
+
             # Parse Florence-2 output
             parsed_answer = self.florence2_processor.post_process_generation(
                 generated_text,
@@ -225,64 +230,47 @@ class Florence2Service(Node):
                 image_size=(pil_image.width, pil_image.height)
             )
 
-            self.get_logger().info(f'Florence-2 raw output: {parsed_answer}')
+            self.get_logger().info(f'Florence-2 parsed output: {parsed_answer}')
 
-            # Extract detections from open vocabulary detection
-            # OVD returns bboxes and labels
+            # Extract detection from OVD result
             if task_prompt not in parsed_answer:
                 return self._create_detection_result(
                     detected=False,
-                    error=f'No objects found matching "{text_prompt}"'
+                    error=f'No object found matching "{text_prompt}"'
                 )
 
             detection_data = parsed_answer[task_prompt]
             bboxes = detection_data.get('bboxes', [])
-            labels = detection_data.get('bboxes_labels', [])
 
             if len(bboxes) == 0:
                 return self._create_detection_result(
                     detected=False,
-                    error=f'No objects found matching "{text_prompt}"'
+                    error=f'No object found matching "{text_prompt}"'
                 )
 
-            # Build detection list from bboxes
-            all_detections = []
-            for i, bbox in enumerate(bboxes):
-                x1, y1, x2, y2 = bbox
-                cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
-                label = labels[i] if i < len(labels) else text_prompt
+            # Take the first bounding box (OVD should return the most relevant match first)
+            bbox = bboxes[0]
+            x1, y1, x2, y2 = bbox
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
 
-                all_detections.append({
-                    'bbox': [float(x1), float(y1), float(x2), float(y2)],
-                    'center_x': float(cx),
-                    'center_y': float(cy),
-                    'confidence': 1.0,  # Florence-2 doesn't provide confidence scores
-                    'phrase': label
-                })
-
-            if len(all_detections) == 0:
-                return self._create_detection_result(
-                    detected=False,
-                    error=f'No objects found matching "{text_prompt}"'
-                )
-
-            self.get_logger().info(f'Found {len(all_detections)} detection(s) for "{text_prompt}"')
-            for i, det in enumerate(all_detections):
-                self.get_logger().info(f"  {i}: '{det['phrase']}' at ({det['center_x']:.1f}, {det['center_y']:.1f})")
-
-            # Select the first detection (most relevant according to Florence-2)
-            selected_detection = all_detections[0]
+            self.get_logger().info(f'Found "{text_prompt}" at ({cx:.1f}, {cy:.1f}), bbox: {bbox}')
 
             return self._create_detection_result(
                 detected=True,
-                confidence=selected_detection['confidence'],
-                center_x=selected_detection['center_x'],
-                center_y=selected_detection['center_y'],
-                bbox=selected_detection['bbox'],
-                phrase=selected_detection['phrase'],
-                mask=None,  # No mask with OVD, only bboxes
-                all_detections=all_detections
+                confidence=1.0,
+                center_x=float(cx),
+                center_y=float(cy),
+                bbox=[float(x1), float(y1), float(x2), float(y2)],
+                phrase=text_prompt,  # Use the original query, not model's label
+                mask=None,
+                all_detections=[{
+                    'bbox': [float(x1), float(y1), float(x2), float(y2)],
+                    'center_x': float(cx),
+                    'center_y': float(cy),
+                    'confidence': 1.0,
+                    'phrase': text_prompt
+                }]
             )
 
         except Exception as e:
