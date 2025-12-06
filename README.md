@@ -1,127 +1,98 @@
 # BTGenCobot
 
-Generate robot behavior trees from natural language using an on-robot LLM.
+Natural language to BehaviorTree XML generation for ROS2 mobile manipulators.
 
-## What It Does
+## Overview
 
-BTGenCobot converts natural language commands like "Navigate to the kitchen and say hello" into valid BehaviorTree.CPP XML that executes on your robot. The LLM runs directly as a ROS2 node on the robot, enabling autonomous behavior tree generation.
+BTGenCobot takes commands like "pick up the red cup and place it on the table" and generates valid BehaviorTree.CPP XML for execution on Nav2. Uses a fine-tuned Llama 3.2-1B model with grammar-constrained decoding to ensure syntactically correct output.
 
-## Quick Start
+## Requirements
+
+- Docker & Docker Compose
+- NVIDIA GPU (optional, for faster inference)
+
+## Usage
 
 ```bash
-# Build and start the container
 docker-compose up --build
 
-# Inside the container, build the workspace
+# In the container
 colcon build --symlink-install
 source install/setup.bash
 
-# Launch Gazebo simulation with the mobile manipulator
-ros2 launch mobile_manipulator gazebo.launch.py
+# Start simulation
+ros2 launch turtlebot3_manipulation_description gazebo.launch.py
 
-# In another terminal (or tmux pane), run Nav2
+# Start Nav2
 ros2 launch bt_bringup nav2_bringup.launch.py
 
-# Run the BT generator node
-ros2 run bt_generator bt_generator_node
+# Start inference server (on host or in container)
+cd inference_server && uv run serve
 
-# Send commands via ROS2 topic
-ros2 topic pub /user_command std_msgs/String "data: 'Go to the kitchen and say hello'"
+# Send commands
+ros2 topic pub /btgen_nl_command std_msgs/String "data: 'pick up the red cup'"
 ```
-
-**Access VNC Desktop**: Open http://localhost:6080 in your browser (password: `vncpassword`)
 
 ## Architecture
 
 ```
-User Input (text)
-    ↓
-ROS2 Topic: /user_command
-    ↓
-bt_generator_node (ROS2)
-    ├─ Llama 3.2-1B (PyTorch)
-    ├─ outlines (structured generation)
-    └─ BT XML Schema validation
-    ↓
-Generated BT XML
-    ↓
-Nav2 bt_navigator
-    ├─ Custom BT plugins
-    └─ Standard Nav2 plugins
-    ↓
-Gazebo Simulation (mobile manipulator)
+Natural Language Command
+         │
+         ▼
+┌─────────────────────────┐
+│   Inference Server      │
+│   (FastAPI + Llama 3.2) │
+│   + EBNF Grammar CFG    │
+└───────────┬─────────────┘
+            │
+            ▼
+      BT XML Output
+            │
+            ▼
+┌─────────────────────────┐
+│  bt_text_interface      │
+│  (ROS2 Action Server)   │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│  Nav2 bt_navigator      │
+│  + Custom BT Plugins    │
+└───────────┬─────────────┘
+            │
+            ▼
+      Robot Execution
 ```
 
 ## Project Structure
 
 ```
-BTGenCobot/                     # ROS2 Workspace Root
-├── src/                        # ROS2 Packages
-│   ├── bt_generator/           # LLM BT generation node
-│   │   ├── bt_generator/       # Python module
-│   │   │   ├── __init__.py
-│   │   │   └── bt_generator_node.py
-│   │   ├── package.xml
-│   │   ├── setup.py
-│   │   └── setup.cfg
-│   │
-│   ├── bt_bringup/             # System launch and configuration
-│   │   ├── launch/             # Launch files (Nav2, SLAM, full system)
-│   │   ├── config/             # Nav2, SLAM, AMCL configs
-│   │   ├── CMakeLists.txt
-│   │   └── package.xml
-│   │
-│   └── bt_nav2_plugins/        # Custom BT action plugins
-│       ├── include/bt_nav2_plugins/
-│       ├── src/                # Plugin implementations (SayText, etc.)
-│       ├── plugins/            # Plugin XML descriptors
-│       ├── CMakeLists.txt
-│       └── package.xml
+BTGenCobot/
+├── inference_server/           # LLM inference (FastAPI)
+│   ├── api/                    # REST endpoints
+│   ├── core/                   # Model loading, generation
+│   ├── validation/             # XML validation, post-processing
+│   └── prompts/                # System prompts
 │
-├── robot_description/          # Robot URDF descriptions
-│   └── mobile_manipulator/     # Mobile base + OpenManipulator-X arm
-│       ├── urdf/               # URDF and xacro files
-│       ├── launch/             # Launch files for Gazebo and Nav2
-│       ├── config/             # Nav2 and controller configs
-│       ├── worlds/             # Gazebo world files
-│       ├── behavior_trees/     # Example BT XML files
-│       ├── CMakeLists.txt
-│       ├── package.xml
-│       └── README.md
+├── src/
+│   ├── bt_text_interface/      # ROS2 action server for BT generation
+│   ├── bt_nav2_plugins/        # Custom Nav2 BT nodes (DetectObject, Pick, Place, Spin)
+│   ├── bt_bringup/             # Launch files and Nav2 config
+│   ├── manipulator_control/    # Arm IK and control service
+│   ├── vision_services/        # Florence-2 object detection
+│   └── btgencobot_interfaces/  # Custom ROS2 messages/services
 │
-├── models/                     # Non-ROS: LLM model data
-│   └── btgenbot2/
-│       ├── models/             # Model weights and config
-│       └── README.md
-│
-├── Dockerfile                  # All-in-one container (ROS2 + Gazebo + Nav2 + LLM)
-├── docker-compose.yml          # Single container setup
-├── README.md
-├── SETUP.md                    # Detailed setup instructions
-└── TESTING_GUIDE.md            # Testing guide for OpenManipulator-X
+└── robot_description/          # TurtleBot3 + OpenManipulator-X URDF
 ```
 
-## Components
+## Custom BT Nodes
 
-- **bt_generator**: ROS2 Python node running Llama 3.2-1B with outlines for structured BT XML generation
-- **bt_bringup**: System-level launch files and configurations for Nav2, SLAM, and AMCL
-- **bt_nav2_plugins**: Custom BehaviorTree.CPP plugins compiled for Nav2
-- **mobile_manipulator**: Custom mobile base with OpenManipulator-X arm (4-DOF + gripper)
-- **Nav2**: Standard ROS2 navigation stack with BT execution
-- **Gazebo Harmonic**: Robot simulation environment
-
-## Tech Stack
-
-- **ROS2 Jazzy** - Robot Operating System
-- **PyTorch** - Llama 3.2-1B inference
-- **outlines** - Structured generation with JSON schema
-- **Nav2** - Navigation stack with BehaviorTree.CPP
-- **Gazebo Harmonic** - Robot simulator with ros2_control integration
-- **Docker** - Single container with all dependencies
-
-## Development Status
-
-🚧 **Under Active Development** - See ROADMAP.md for implementation plan
+| Node | Description |
+|------|-------------|
+| `DetectObject` | Open-vocabulary object detection via Florence-2 |
+| `PickObject` | Approach and grasp detected object |
+| `PlaceObject` | Place held object at detected location |
+| `SpinLeft/SpinRight` | Rotate in place |
 
 ## License
 
