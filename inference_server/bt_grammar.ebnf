@@ -1,0 +1,128 @@
+// BehaviorTree XML Grammar - Explicit Syntax
+// Uses <Action ID="NodeType" .../> format instead of <NodeType .../>
+// This matches the model's trained output format
+
+// Start: full XML document with root element
+start: xml_decl root
+
+xml_decl: "<?xml" WS "version" WS? "=" WS? version_val "?>"
+version_val: "\"1.0\""
+
+root: "<root" " " "BTCPP_format=\"4\"" " " main_tree_attr ((" " | "\t") attribute)* " "? ">" WS? behavior_tree WS? "</root>"
+main_tree_attr: "main_tree_to_execute=\"" att_value_content "\""
+
+behavior_tree: "<BehaviorTree" ((" " | "\t") attribute)* " "? ">" WS? bt_content WS? "</BehaviorTree>"
+
+// Root level content - Level 1
+bt_content: node_l1
+
+// ============================================================================
+// DEPTH-LIMITED NODE HIERARCHY (5 levels max)
+// ============================================================================
+
+// Level 1: Top-level node (inside BehaviorTree)
+node_l1: action_node | condition_node | control_l1 | decorator_l1
+
+// Level 2-5
+node_l2: action_node | condition_node | control_l2 | decorator_l2
+node_l3: action_node | condition_node | control_l3 | decorator_l3
+node_l4: action_node | condition_node | control_l4 | decorator_l4
+node_l5: action_node | condition_node
+
+// ============================================================================
+// CONTROL NODES AT EACH LEVEL
+// ============================================================================
+
+control_l1: sequence_l1 | fallback_l1 | parallel_l1 | reactive_seq_l1 | reactive_fb_l1
+sequence_l1: "<Sequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS? "</Sequence>"
+fallback_l1: "<Fallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS? "</Fallback>"
+parallel_l1: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS? "</Parallel>"
+reactive_seq_l1: "<ReactiveSequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS? "</ReactiveSequence>"
+reactive_fb_l1: "<ReactiveFallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l2 WS? "</ReactiveFallback>"
+
+control_l2: sequence_l2 | fallback_l2 | parallel_l2 | reactive_seq_l2 | reactive_fb_l2
+sequence_l2: "<Sequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS? "</Sequence>"
+fallback_l2: "<Fallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS? "</Fallback>"
+parallel_l2: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS? "</Parallel>"
+reactive_seq_l2: "<ReactiveSequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS? "</ReactiveSequence>"
+reactive_fb_l2: "<ReactiveFallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l3 WS? "</ReactiveFallback>"
+
+control_l3: sequence_l3 | fallback_l3 | parallel_l3 | reactive_seq_l3 | reactive_fb_l3
+sequence_l3: "<Sequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS? "</Sequence>"
+fallback_l3: "<Fallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS? "</Fallback>"
+parallel_l3: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS? "</Parallel>"
+reactive_seq_l3: "<ReactiveSequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS? "</ReactiveSequence>"
+reactive_fb_l3: "<ReactiveFallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l4 WS? "</ReactiveFallback>"
+
+control_l4: sequence_l4 | fallback_l4 | parallel_l4 | reactive_seq_l4 | reactive_fb_l4
+sequence_l4: "<Sequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS? "</Sequence>"
+fallback_l4: "<Fallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS? "</Fallback>"
+parallel_l4: "<Parallel" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS? "</Parallel>"
+reactive_seq_l4: "<ReactiveSequence" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS? "</ReactiveSequence>"
+reactive_fb_l4: "<ReactiveFallback" ((" " | "\t") attribute)* " "? ">" WS? node_list_l5 WS? "</ReactiveFallback>"
+
+node_list_l2: node_l2 (WS? node_l2)*
+node_list_l3: node_l3 (WS? node_l3)*
+node_list_l4: node_l4 (WS? node_l4)*
+node_list_l5: node_l5 (WS? node_l5)*
+
+// ============================================================================
+// DECORATOR NODES AT EACH LEVEL
+// ============================================================================
+
+decorator_l1: inverter_l1 | force_success_l1 | force_failure_l1 | repeat_l1 | retry_l1 | keep_running_l1
+inverter_l1: "<Inverter" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</Inverter>"
+force_success_l1: "<ForceSuccess" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</ForceSuccess>"
+force_failure_l1: "<ForceFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</ForceFailure>"
+repeat_l1: "<Repeat" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</Repeat>"
+retry_l1: "<RetryUntilSuccessful" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</RetryUntilSuccessful>"
+keep_running_l1: "<KeepRunningUntilFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l2 WS? "</KeepRunningUntilFailure>"
+
+decorator_l2: inverter_l2 | force_success_l2 | force_failure_l2 | repeat_l2 | retry_l2 | keep_running_l2
+inverter_l2: "<Inverter" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</Inverter>"
+force_success_l2: "<ForceSuccess" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</ForceSuccess>"
+force_failure_l2: "<ForceFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</ForceFailure>"
+repeat_l2: "<Repeat" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</Repeat>"
+retry_l2: "<RetryUntilSuccessful" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</RetryUntilSuccessful>"
+keep_running_l2: "<KeepRunningUntilFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l3 WS? "</KeepRunningUntilFailure>"
+
+decorator_l3: inverter_l3 | force_success_l3 | force_failure_l3 | repeat_l3 | retry_l3 | keep_running_l3
+inverter_l3: "<Inverter" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</Inverter>"
+force_success_l3: "<ForceSuccess" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</ForceSuccess>"
+force_failure_l3: "<ForceFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</ForceFailure>"
+repeat_l3: "<Repeat" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</Repeat>"
+retry_l3: "<RetryUntilSuccessful" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</RetryUntilSuccessful>"
+keep_running_l3: "<KeepRunningUntilFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l4 WS? "</KeepRunningUntilFailure>"
+
+decorator_l4: inverter_l4 | force_success_l4 | force_failure_l4 | repeat_l4 | retry_l4 | keep_running_l4
+inverter_l4: "<Inverter" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</Inverter>"
+force_success_l4: "<ForceSuccess" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</ForceSuccess>"
+force_failure_l4: "<ForceFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</ForceFailure>"
+repeat_l4: "<Repeat" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</Repeat>"
+retry_l4: "<RetryUntilSuccessful" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</RetryUntilSuccessful>"
+keep_running_l4: "<KeepRunningUntilFailure" ((" " | "\t") attribute)* " "? ">" WS? node_l5 WS? "</KeepRunningUntilFailure>"
+
+// ============================================================================
+// LEAF NODES - Explicit syntax: <Action ID="NodeType" .../> and <Condition ID="..."/>
+// ============================================================================
+
+// Action node using explicit syntax - ID specifies the node type, other attributes are ports
+action_node: "<Action" " " action_id_attr ((" " | "\t") attribute)* " "? "/>"
+action_id_attr: "ID" " "? "=" " "? "\"" action_id_value "\""
+action_id_value: /[A-Za-z][A-Za-z0-9_]*/
+
+// Condition node using explicit syntax
+condition_node: "<Condition" " " condition_id_attr ((" " | "\t") attribute)* " "? "/>"
+condition_id_attr: "ID" " "? "=" " "? "\"" condition_id_value "\""
+condition_id_value: /[A-Za-z][A-Za-z0-9_]*/
+
+// ============================================================================
+// ATTRIBUTE DEFINITIONS
+// ============================================================================
+
+// Generic attribute - any name="value" pair
+attribute: att_name " "? "=" " "? "\"" att_value_content "\""
+att_name: /[a-zA-Z_][a-zA-Z0-9_]*/
+att_value_content: /[^<&"]*/
+
+WS: /[ \t\n\r]+/

@@ -1,0 +1,32 @@
+<library path="bt_nav2_plugins">
+  <class name="DetectObject" type="bt_nav2_plugins::DetectObject" base_class_type="BT::ActionNodeBase">
+    <description>
+      Detect objects using vision (color-based or VLM).
+      Outputs target_pose in map frame.
+    </description>
+  </class>
+  <class name="PickObject" type="bt_nav2_plugins::PickObject" base_class_type="BT::ActionNodeBase">
+    <description>
+      Pick up an object at the specified pose using the manipulator.
+      Requires target_pose input parameter.
+    </description>
+  </class>
+  <class name="PlaceObject" type="bt_nav2_plugins::PlaceObject" base_class_type="BT::ActionNodeBase">
+    <description>
+      Place an object at the specified pose using the manipulator.
+      Requires target_pose input parameter.
+    </description>
+  </class>
+  <class name="SpinLeft" type="bt_nav2_plugins::SpinLeft" base_class_type="BT::ActionNodeBase">
+    <description>
+      Spin the robot left (counterclockwise) by a specified angle.
+      Input: spin_dist (radians, positive), time_allowance (seconds).
+    </description>
+  </class>
+  <class name="SpinRight" type="bt_nav2_plugins::SpinRight" base_class_type="BT::ActionNodeBase">
+    <description>
+      Spin the robot right (clockwise) by a specified angle.
+      Input: spin_dist (radians, positive), time_allowance (seconds).
+    </description>
+  </class>
+</library>

@@ -1,0 +1,17 @@
+# Service for object detection and segmentation using Grounded SAM (Grounding DINO + EdgeSAM)
+# Request
+sensor_msgs/Image image                # RGB image
+string object_description              # Text description of object to find (e.g., "red cup", "table")
+float32 box_threshold 0.35            # Detection confidence threshold (0-1)
+---
+# Response
+bool detected                          # Whether object was found
+float32 confidence                     # Detection confidence score (0-1)
+float32 center_x                       # Bounding box center X in pixels (-1 if not detected)
+float32 center_y                       # Bounding box center Y in pixels (-1 if not detected)
+float32[] bbox                         # Bounding box [x1, y1, x2, y2] in pixels (empty if not detected)
+string phrase                          # Matched text phrase from model
+string error_message                   # Error message if detection failed
+uint8[] mask                           # Binary segmentation mask (flattened, row-major order)
+int32 mask_height                      # Height of segmentation mask
+int32 mask_width                       # Width of segmentation mask

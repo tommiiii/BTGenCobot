@@ -1,0 +1,20 @@
+Actions:
+- SpinLeft (spin_dist, time_allowance) - rotate left
+- SpinRight (spin_dist, time_allowance) - rotate right
+- DriveOnHeading (dist_to_travel, speed, time_allowance) - move forward
+- BackUp (backup_dist, backup_speed, time_allowance) - move backward
+- Wait (wait_duration) - pause execution
+- ComputePathToPose (goal, path) - plan path, output to {path}
+- FollowPath (path) - execute path from {path}
+- NavigateToPose (goal) - navigate directly to goal pose
+- DetectObject (object_description, target_pose) - find object, output pose to {target_pose}. REQUIRED: object_description
+- PickObject (object_description) - pick up object. REQUIRED: object_description
+- PlaceObject (place_description) - place held object. REQUIRED: place_description (e.g., "table", "bin")
+- ClearEntireCostmap - clear navigation costmap
+
+Conditions (use ONLY when explicitly requested by the user - do NOT add unless asked):
+- GoalReached
+- IsStuck
+- TimeExpired (seconds)
+- DistanceTraveled (distance)
+- GoalUpdated

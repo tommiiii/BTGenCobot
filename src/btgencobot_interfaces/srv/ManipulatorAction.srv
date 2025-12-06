@@ -1,0 +1,10 @@
+# Request
+string action_type          # "pick" or "place"
+geometry_msgs/PoseStamped target_pose  # Where to pick/place
+float32 object_height       # Estimated object height in meters (0 if unknown)
+float32 object_width        # Estimated object width in meters (0 if unknown)
+float32 object_depth        # Estimated object depth in meters (0 if unknown)
+---
+# Response
+bool success
+string error_message

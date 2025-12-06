@@ -1,0 +1,96 @@
+<?xml version="1.0"?>
+<!-- TurtleBot3 Manipulation -->
+<robot name="turtlebot3_manipulation" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="prefix" default="" />
+  <xacro:arg name="use_sim" default="false" />
+
+  <xacro:arg name="use_fake_hardware" default="false" />
+  <xacro:arg name="fake_sensor_commands" default="false" />
+
+  <!-- Import materials macro -->
+  <xacro:include filename="$(find turtlebot3_manipulation_description)/gazebo/materials.xacro" />
+
+  <!-- Include TurtleBot3 Waffle Pi urdf macro -->
+  <xacro:include filename="$(find turtlebot3_manipulation_description)/urdf/turtlebot3_waffle_pi.urdf.xacro" />
+
+  <!-- Include TurtleBot3 Waffle Pi gazebo macro -->
+  <xacro:include filename="$(find turtlebot3_manipulation_description)/gazebo/turtlebot3_waffle_pi.gazebo.xacro" />
+
+  <!-- Include OpenManipulator-X urdf macro -->
+  <xacro:include filename="$(find turtlebot3_manipulation_description)/urdf/open_manipulator_x.urdf.xacro" />
+
+  <!-- Include OpenManipulator-X gazebo macro -->
+  <xacro:include filename="$(find turtlebot3_manipulation_description)/gazebo/open_manipulator_x.gazebo.xacro" />
+
+  <!-- Include TurtleBot3 Manipulation ros2 control macro -->
+  <xacro:include filename="$(find turtlebot3_manipulation_description)/ros2_control/turtlebot3_manipulation_system.ros2_control.xacro" />
+
+  <xacro:turtlebot3_waffle_pi prefix="$(arg prefix)" />
+  <xacro:turtlebot3_waffle_pi_gazebo prefix="$(arg prefix)" />
+
+  <!-- Used for fixing OpenManipulator-X on TurtleBot3 Waffle Pi -->
+  <joint name="$(arg prefix)base_fixed" type="fixed">
+    <parent link="$(arg prefix)base_link"/>
+    <child link="$(arg prefix)link1"/>
+    <origin xyz="-0.092 0.0 0.091" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:open_manipulator_x prefix="$(arg prefix)" />
+  <xacro:open_manipulator_x_gazebo prefix="$(arg prefix)" />
+
+  <!-- Counterweight to balance the robot when arm extends forward -->
+  <!-- Positioned at rear of robot to prevent forward tilting -->
+  <!-- Mass calculated to counteract arm (0.6kg at ~0.2m forward) with weight at ~0.22m rear -->
+  <xacro:property name="counterweight_mass" value="0.8" />  <!-- kg - adjustable -->
+  
+  <joint name="$(arg prefix)counterweight_joint" type="fixed">
+    <parent link="$(arg prefix)base_link"/>
+    <child link="$(arg prefix)counterweight_link"/>
+    <!-- Position: rear of robot, low center of gravity -->
+    <!-- x=-0.22m puts it behind the rear casters (-0.177m) -->
+    <!-- z=0.02m keeps it low for stability -->
+    <origin xyz="-0.22 0.0 0.02" rpy="0 0 0"/>
+  </joint>
+
+  <link name="$(arg prefix)counterweight_link">
+    <visual>
+      <!-- Visual representation: compact weight block -->
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.06 0.12 0.04"/>  <!-- 6cm x 12cm x 4cm block -->
+      </geometry>
+      <material name="dark"/>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.06 0.12 0.04"/>
+      </geometry>
+    </collision>
+
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="${counterweight_mass}"/>
+      <!-- Inertia for solid box: I = (1/12) * m * (h^2 + d^2) etc. -->
+      <!-- For 0.8kg box of 0.06 x 0.12 x 0.04 m -->
+      <inertia ixx="${(1.0/12.0) * counterweight_mass * (0.12*0.12 + 0.04*0.04)}" 
+               ixy="0.0" ixz="0.0"
+               iyy="${(1.0/12.0) * counterweight_mass * (0.06*0.06 + 0.04*0.04)}"
+               iyz="0.0"
+               izz="${(1.0/12.0) * counterweight_mass * (0.06*0.06 + 0.12*0.12)}"/>
+    </inertial>
+  </link>
+
+  <xacro:turtlebot3_manipulation_system
+    name="TurtleBot3ManipulationSystem" prefix="$(arg prefix)" use_sim="$(arg use_sim)"
+    use_fake_hardware="$(arg use_fake_hardware)"
+    fake_sensor_commands="$(arg fake_sensor_commands)"/>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find turtlebot3_manipulation_description)/config/controller_manager.yaml</parameters>
+    </plugin>
+  </gazebo>
+
+</robot>

@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bt_nav2_plugins</name>
+  <version>0.1.0</version>
+  <description>Custom BehaviorTree plugins for Nav2</description>
+  <maintainer email="tomtom4830@gmail.com">Tommaso De Pascale</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- ROS2 core -->
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+
+  <!-- BehaviorTree -->
+  <depend>behaviortree_cpp</depend>
+  <depend>nav2_behavior_tree</depend>
+  <depend>nav2_msgs</depend>
+
+  <!-- Messages -->
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>btgencobot_interfaces</depend>
+
+  <!-- TF2 -->
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <!-- Vision/Image processing -->
+  <depend>cv_bridge</depend>
+  <depend>image_transport</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <nav2_behavior_tree plugin="${prefix}/plugins/bt_nav2_plugins.xml" />
+  </export>
+</package>

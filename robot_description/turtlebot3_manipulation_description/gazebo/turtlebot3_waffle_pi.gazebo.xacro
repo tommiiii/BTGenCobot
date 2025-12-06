@@ -1,0 +1,246 @@
+<?xml version="1.0"?>
+<!--
+Adapted for Gazebo Harmonic (gz-sim) from original Gazebo Classic version
+Original: https://github.com/ROBOTIS-GIT/turtlebot3/blob/kinetic-devel/turtlebot3_description/urdf/turtlebot3_waffle_pi_for_open_manipulator.gazebo.xacro
+-->
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <xacro:macro name="turtlebot3_waffle_pi_gazebo" params="prefix">
+
+  <xacro:property name="laser_visual"  value="true"/>
+  <xacro:property name="camera_visual" value="true"/>
+  <xacro:property name="imu_visual"    value="true"/>
+
+  <gazebo reference="${prefix}base_link">
+    <material>Gazebo/DarkGrey</material>
+  </gazebo>
+
+  <gazebo reference="${prefix}wheel_left_link">
+    <mu1>10000</mu1>
+    <mu2>10000</mu2>
+    <kp>500000.0</kp>
+    <kd>10.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.1</maxVel>
+    <fdir1>1 0 0</fdir1>
+    <material>Gazebo/FlatBlack</material>
+  </gazebo>
+
+  <gazebo reference="${prefix}wheel_right_link">
+    <mu1>10000</mu1>
+    <mu2>10000</mu2>
+    <kp>500000.0</kp>
+    <kd>10.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.1</maxVel>
+    <fdir1>1 0 0</fdir1>
+    <material>Gazebo/FlatBlack</material>
+  </gazebo>
+
+  <gazebo reference="${prefix}caster_back_right_link">
+    <mu1>0.1</mu1>
+    <mu2>0.1</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>1.0</maxVel>
+    <material>Gazebo/FlatBlack</material>
+  </gazebo>
+
+  <gazebo reference="${prefix}caster_back_left_link">
+    <mu1>0.1</mu1>
+    <mu2>0.1</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>1.0</maxVel>
+    <material>Gazebo/FlatBlack</material>
+  </gazebo>
+
+  <!-- IMU sensor for Gazebo Harmonic -->
+  <gazebo reference="${prefix}imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <topic>imu</topic>
+      <update_rate>200</update_rate>
+      <gz_frame_id>imu_link</gz_frame_id>
+      <always_on>1</always_on>
+      <visualize>${imu_visual}</visualize>
+      <imu>
+        <angular_velocity>
+          <x>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>2e-4</stddev>
+            </noise>
+          </x>
+          <y>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>2e-4</stddev>
+            </noise>
+          </y>
+          <z>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>2e-4</stddev>
+            </noise>
+          </z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>1.7e-2</stddev>
+            </noise>
+          </x>
+          <y>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>1.7e-2</stddev>
+            </noise>
+          </y>
+          <z>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>1.7e-2</stddev>
+            </noise>
+          </z>
+        </linear_acceleration>
+      </imu>
+    </sensor>
+  </gazebo>
+
+  <!-- Differential drive plugin for Gazebo Harmonic -->
+  <gazebo>
+    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+      <left_joint>${prefix}wheel_left_joint</left_joint>
+      <right_joint>${prefix}wheel_right_joint</right_joint>
+      <wheel_separation>0.287</wheel_separation>
+      <wheel_radius>0.033</wheel_radius>
+      <odom_publish_frequency>30</odom_publish_frequency>
+      <max_linear_acceleration>1.0</max_linear_acceleration>
+      <min_linear_acceleration>-1.0</min_linear_acceleration>
+      <max_angular_acceleration>2.0</max_angular_acceleration>
+      <min_angular_acceleration>-2.0</min_angular_acceleration>
+      <max_linear_velocity>0.26</max_linear_velocity>
+      <min_linear_velocity>-0.26</min_linear_velocity>
+      <max_angular_velocity>1.82</max_angular_velocity>
+      <min_angular_velocity>-1.82</min_angular_velocity>
+      <topic>/model/turtlebot3_manipulation/cmd_vel</topic>
+      <odom_topic>/model/turtlebot3_manipulation/odometry</odom_topic>
+      <tf_topic>/model/turtlebot3_manipulation/tf</tf_topic>
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_footprint</child_frame_id>
+      <publish_odom_tf>true</publish_odom_tf>
+    </plugin>
+  </gazebo>
+
+  <!-- Joint State Publisher plugin for wheel joints -->
+  <gazebo>
+    <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
+      <joint_name>${prefix}wheel_left_joint</joint_name>
+      <joint_name>${prefix}wheel_right_joint</joint_name>
+      <topic>gazebo_joint_states</topic>
+      <update_rate>30</update_rate>
+    </plugin>
+  </gazebo>
+
+  <!-- LIDAR sensor for Gazebo Harmonic -->
+  <gazebo reference="${prefix}base_scan">
+    <material>Gazebo/FlatBlack</material>
+    <sensor name="lidar" type="gpu_lidar">
+      <topic>scan</topic>
+      <update_rate>10</update_rate>
+      <gz_frame_id>base_scan</gz_frame_id>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>0.0</min_angle>
+            <max_angle>6.28319</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.12</min>
+          <max>10.0</max>
+          <resolution>0.015</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </lidar>
+      <always_on>1</always_on>
+      <visualize>${laser_visual}</visualize>
+    </sensor>
+  </gazebo>
+
+  <!-- Preserve base_scan joint -->
+  <gazebo reference="${prefix}scan_joint">
+    <preserveFixedJoint>true</preserveFixedJoint>
+  </gazebo>
+
+  <!-- Camera sensor for Gazebo Harmonic -->
+  <gazebo reference="${prefix}camera_rgb_frame">
+    <sensor type="camera" name="pi_camera">
+      <update_rate>30</update_rate>
+      <always_on>true</always_on>
+      <visualize>${camera_visual}</visualize>
+      <topic>camera</topic>
+      <gz_frame_id>${prefix}camera_rgb_frame</gz_frame_id>
+      <camera>
+        <horizontal_fov>1.085595</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.03</near>
+          <far>100</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.007</stddev>
+        </noise>
+        <lens>
+          <intrinsics>
+            <!-- fx, fy, cx, cy -->
+            <fx>554.3</fx>
+            <fy>554.3</fy>
+            <cx>320.5</cx>
+            <cy>240.5</cy>
+          </intrinsics>
+        </lens>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <!-- Add depth camera sensor -->
+  <gazebo reference="${prefix}camera_rgb_frame">
+    <sensor type="depth_camera" name="pi_depth_camera">
+      <update_rate>30</update_rate>
+      <always_on>true</always_on>
+      <topic>camera/depth</topic>
+      <gz_frame_id>${prefix}camera_rgb_frame</gz_frame_id>
+      <camera>
+        <horizontal_fov>1.085595</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R_FLOAT32</format>
+        </image>
+        <clip>
+          <near>0.03</near>
+          <far>10.0</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  </xacro:macro>
+
+</robot>
