@@ -48,7 +48,7 @@ class ManipulatorService(Node):
                   'arm_5_joint', 'arm_6_joint', 'arm_7_joint']
 
     # Gripper positions for parallel gripper
-    GRIPPER_OPEN = 0.04   # 4 cm open per finger (approx 8cm total)
+    GRIPPER_OPEN = 0.096  # Fully open
     GRIPPER_CLOSED = 0.0  # Fully closed
 
     def __init__(self):
@@ -201,7 +201,6 @@ class ManipulatorService(Node):
 
     def _execute_pick(self, target_pose: PoseStamped, object_height: float, object_width: float) -> bool:
         # Move arm to a home/ready pose to avoid collision while navigating
-        self._move_torso(0.2, 2.0)
         self._move_gripper(self.GRIPPER_OPEN, 1.0)
         
         # We calculate the grasp position
@@ -217,8 +216,12 @@ class ManipulatorService(Node):
         above_pose.pose.position.z = above_z
         
         # Calculate IK
-        grasp_joints = self._compute_ik_for_pose(grasp_pose)
         above_joints = self._compute_ik_for_pose(above_pose)
+        
+        # Use above_joints as the initial guess (seed) for grasp_joints.
+        # Since the pose only translates 10cm down, this guarantees the wrist won't
+        # randomly flip or twist to a different local minimum between the two poses.
+        grasp_joints = self._compute_ik_for_pose(grasp_pose, guess_joints=above_joints)
         
         if not grasp_joints:
             self.get_logger().error("Pick failed: IK could not find solution for grasp pose.")
@@ -249,8 +252,8 @@ class ManipulatorService(Node):
         above_pose = copy.deepcopy(place_pose)
         above_pose.pose.position.z += 0.10
         
-        place_joints = self._compute_ik_for_pose(place_pose)
         above_joints = self._compute_ik_for_pose(above_pose)
+        place_joints = self._compute_ik_for_pose(place_pose, guess_joints=above_joints)
         
         if above_joints:
             self._move_all_joints(above_joints, 3.0)
@@ -265,7 +268,7 @@ class ManipulatorService(Node):
             
         return True
 
-    def _compute_ik_for_pose(self, target_pose: PoseStamped) -> list:
+    def _compute_ik_for_pose(self, target_pose: PoseStamped, guess_joints: list = None) -> list:
         try:
             transform = self.tf_buffer.lookup_transform(
                 "base_footprint",
@@ -285,11 +288,16 @@ class ManipulatorService(Node):
         # Use initial guess based on current positions to minimize motion
         # active_links_mask will map to 8 active joints
         current_angles = []
-        # Torso
-        current_angles.append(self.current_joint_positions.get(self.TORSO_JOINT, 0.2))
-        # Arm 1-7
-        for j in self.ARM_JOINTS:
-            current_angles.append(self.current_joint_positions.get(j, 0.0))
+        
+        if guess_joints and len(guess_joints) == 8:
+            # Use provided guess (e.g. from a previous IK step) to prevent twisting
+            current_angles = guess_joints
+        else:
+            # Torso
+            current_angles.append(self.current_joint_positions.get(self.TORSO_JOINT, 0.2))
+            # Arm 1-7
+            for j in self.ARM_JOINTS:
+                current_angles.append(self.current_joint_positions.get(j, 0.0))
             
         # Pad with 0s for fixed/origin links that ikpy adds
         # ikpy output includes the origin link and the end effector link (so 8 + 2 = 10 elements usually)

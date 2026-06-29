@@ -529,7 +529,7 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     // Set navigation goal at a distance where the camera can still see the object clearly.
     // TIAGo's 7-DOF arm has ~0.8m reach, so a comfortable approach offset gives the camera
     // a good viewing angle while keeping the object within arm's reach.
-    const double approach_offset = 0.55;  // Nav2 goal 55cm from object
+    const double approach_offset = 0.40;  // Nav2 goal 40cm from object
     
     if (distance_to_object > approach_offset) {
       // Normalize direction vector and place goal close to object
