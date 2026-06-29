@@ -36,6 +36,7 @@ public:
   void initialize_moveit(std::shared_ptr<rclcpp::Node> shared_this)
   {
     move_group_arm_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(shared_this, "arm_torso");
+    move_group_arm_->setEndEffectorLink("gripper_tool_link");
     // TIAGo MoveIt config usually has higher velocity scaling
     move_group_arm_->setMaxVelocityScalingFactor(1.0);
     move_group_arm_->setMaxAccelerationScalingFactor(1.0);
@@ -113,46 +114,20 @@ private:
     grasp_pose.pose.orientation.z = 0.0;
     grasp_pose.pose.orientation.w = 0.0;
 
-    geometry_msgs::msg::PoseStamped above_pose = grasp_pose;
-    above_pose.pose.position.z += 0.10;
-
-    // 2. Move above object (Free space planning)
-    RCLCPP_INFO(this->get_logger(), "Planning path to above pose...");
-    move_group_arm_->setPoseTarget(above_pose);
+    // 2. Move directly to grasp pose using free space planning
+    RCLCPP_INFO(this->get_logger(), "Planning path to grasp pose...");
+    move_group_arm_->setPoseTarget(grasp_pose);
     
     moveit::planning_interface::MoveGroupInterface::Plan my_plan;
     bool success = (move_group_arm_->plan(my_plan) == moveit::core::MoveItErrorCode::SUCCESS);
     if (!success) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to plan to above pose");
+      RCLCPP_ERROR(this->get_logger(), "Failed to plan to grasp pose");
       return false;
     }
     
-    RCLCPP_INFO(this->get_logger(), "Moving above object...");
+    RCLCPP_INFO(this->get_logger(), "Moving to grasp pose...");
     if (move_group_arm_->execute(my_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to move to above pose");
-      return false;
-    }
-
-    // 3. Move down to grasp (Cartesian path)
-    RCLCPP_INFO(this->get_logger(), "Computing Cartesian path to grasp pose...");
-    std::vector<geometry_msgs::msg::Pose> waypoints;
-    waypoints.push_back(grasp_pose.pose);
-    
-    moveit_msgs::msg::RobotTrajectory trajectory;
-    const double jump_threshold = 0.0; // Disable jump threshold for now
-    const double eef_step = 0.01;
-    
-    double fraction = move_group_arm_->computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
-    RCLCPP_INFO(this->get_logger(), "Cartesian path fraction: %.2f", fraction);
-    
-    if (fraction < 0.9) {
-      RCLCPP_ERROR(this->get_logger(), "Could not compute Cartesian path to grasp pose");
-      return false;
-    }
-    
-    RCLCPP_INFO(this->get_logger(), "Executing Cartesian path...");
-    if (move_group_arm_->execute(trajectory) != moveit::core::MoveItErrorCode::SUCCESS) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to execute Cartesian path to grasp pose");
+      RCLCPP_ERROR(this->get_logger(), "Failed to move to grasp pose");
       return false;
     }
 
@@ -167,11 +142,13 @@ private:
 
     // 5. Move back up (Cartesian path)
     RCLCPP_INFO(this->get_logger(), "Lifting object...");
+    geometry_msgs::msg::PoseStamped above_pose = grasp_pose;
+    above_pose.pose.position.z += 0.15;
     std::vector<geometry_msgs::msg::Pose> up_waypoints;
     up_waypoints.push_back(above_pose.pose);
     
     moveit_msgs::msg::RobotTrajectory up_trajectory;
-    fraction = move_group_arm_->computeCartesianPath(up_waypoints, eef_step, jump_threshold, up_trajectory);
+    double fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, 0.0, up_trajectory);
     
     if (fraction >= 0.9) {
       move_group_arm_->execute(up_trajectory);
@@ -188,52 +165,46 @@ private:
   {
     if (!move_group_arm_) return false;
 
-    const double finger_length = 0.15;
     geometry_msgs::msg::PoseStamped place_pose = target_pose;
-    place_pose.pose.position.z += finger_length;
-    place_pose.pose.orientation.x = 0.0;
+    place_pose.pose.orientation.x = 1.0;
     place_pose.pose.orientation.y = 0.0;
-    place_pose.pose.orientation.z = 1.0;
+    place_pose.pose.orientation.z = 0.0;
     place_pose.pose.orientation.w = 0.0;
 
-    geometry_msgs::msg::PoseStamped above_pose = place_pose;
-    above_pose.pose.position.z += 0.10;
-
-    // 1. Move above place location
-    RCLCPP_INFO(this->get_logger(), "Planning path to above place pose...");
-    move_group_arm_->setPoseTarget(above_pose);
-    if (move_group_arm_->move() != moveit::core::MoveItErrorCode::SUCCESS) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to move to above place pose");
+    // 1. Move directly to place pose using free space planning
+    RCLCPP_INFO(this->get_logger(), "Planning path to place pose...");
+    move_group_arm_->setPoseTarget(place_pose);
+    
+    moveit::planning_interface::MoveGroupInterface::Plan my_plan;
+    bool success = (move_group_arm_->plan(my_plan) == moveit::core::MoveItErrorCode::SUCCESS);
+    if (!success) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to plan to place pose");
+      return false;
+    }
+    
+    RCLCPP_INFO(this->get_logger(), "Moving to place pose...");
+    if (move_group_arm_->execute(my_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to move to place pose");
       return false;
     }
 
-    // 2. Move down to place (Cartesian)
-    RCLCPP_INFO(this->get_logger(), "Moving down to place...");
-    std::vector<geometry_msgs::msg::Pose> waypoints;
-    waypoints.push_back(place_pose.pose);
-    
-    moveit_msgs::msg::RobotTrajectory trajectory;
-    double fraction = move_group_arm_->computeCartesianPath(waypoints, 0.01, 0.0, trajectory);
-    
-    if (fraction >= 0.9) {
-      move_group_arm_->execute(trajectory);
-    } else {
-      RCLCPP_WARN(this->get_logger(), "Cartesian place failed, using free space planning...");
-      move_group_arm_->setPoseTarget(place_pose);
-      move_group_arm_->move();
+    // 2. Open gripper to place
+    RCLCPP_INFO(this->get_logger(), "Opening gripper...");
+    if (!move_gripper(GRIPPER_OPEN, false)) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to open gripper");
+      return false;
     }
 
-    // 3. Open gripper
-    RCLCPP_INFO(this->get_logger(), "Opening gripper...");
-    move_gripper(GRIPPER_OPEN, false);
-
-    // 4. Move back up
-    RCLCPP_INFO(this->get_logger(), "Lifting away...");
+    // 3. Move up (Cartesian lift)
+    RCLCPP_INFO(this->get_logger(), "Lifting after place...");
+    geometry_msgs::msg::PoseStamped above_pose = place_pose;
+    above_pose.pose.position.z += 0.15;
+    
     std::vector<geometry_msgs::msg::Pose> up_waypoints;
     up_waypoints.push_back(above_pose.pose);
     
     moveit_msgs::msg::RobotTrajectory up_trajectory;
-    fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, 0.0, up_trajectory);
+    double fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, 0.0, up_trajectory);
     
     if (fraction >= 0.9) {
       move_group_arm_->execute(up_trajectory);
