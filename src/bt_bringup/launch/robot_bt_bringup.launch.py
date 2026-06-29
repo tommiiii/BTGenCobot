@@ -71,7 +71,8 @@ def generate_launch_description():
             'ft_sensor': 'schunk-ft',
             'camera_model': 'orbbec-astra',
             'laser_model': 'sick-571',
-            'base_type': 'pmb2'
+            'base_type': 'pmb2',
+            'moveit': 'True'
         }.items()
     )
 
