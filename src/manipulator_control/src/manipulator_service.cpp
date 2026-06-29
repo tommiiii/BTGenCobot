@@ -4,7 +4,7 @@
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <btgencobot_interfaces/srv/manipulator_action.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <control_msgs/action/gripper_command.hpp>
+#include <control_msgs/action/follow_joint_trajectory.hpp>
 
 using namespace std::placeholders;
 using namespace std::chrono_literals;
@@ -26,8 +26,8 @@ public:
       callback_group_);
       
     // Setup Gripper Action Client
-    gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::GripperCommand>(
-      this, "/parallel_gripper_controller/gripper_cmd", callback_group_);
+    gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
+      this, "/gripper_controller/follow_joint_trajectory", callback_group_);
       
     RCLCPP_INFO(this->get_logger(), "Manipulator service (MoveIt 2) ready.");
   }
@@ -46,7 +46,7 @@ public:
 private:
   rclcpp::Service<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr service_;
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_arm_;
-  rclcpp_action::Client<control_msgs::action::GripperCommand>::SharedPtr gripper_action_client_;
+  rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr gripper_action_client_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   
   // Gripper settings
@@ -252,17 +252,21 @@ private:
       return false;
     }
 
-    auto goal_msg = control_msgs::action::GripperCommand::Goal();
-    goal_msg.command.position = position;
-    goal_msg.command.max_effort = force_grasp ? 20.0 : 10.0;
-
-    auto send_goal_options = rclcpp_action::Client<control_msgs::action::GripperCommand>::SendGoalOptions();
+    auto goal_msg = control_msgs::action::FollowJointTrajectory::Goal();
+    goal_msg.trajectory.joint_names = {"gripper_left_finger_joint", "gripper_right_finger_joint"};
     
-    std::shared_ptr<std::promise<bool>> promise = std::make_shared<std::promise<bool>>();
-    std::future<bool> future = promise->get_future();
+    trajectory_msgs::msg::JointTrajectoryPoint point;
+    point.positions = {position, position};
+    point.time_from_start = rclcpp::Duration::from_seconds(1.0);
+    goal_msg.trajectory.points.push_back(point);
+
+    auto send_goal_options = rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SendGoalOptions();
+    
+    auto promise = std::make_shared<std::promise<bool>>();
+    auto future = promise->get_future();
 
     send_goal_options.result_callback = 
-      [promise](const rclcpp_action::ClientGoalHandle<control_msgs::action::GripperCommand>::WrappedResult & result) {
+      [promise](const rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::WrappedResult & result) {
         if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
           promise->set_value(true);
         } else {
