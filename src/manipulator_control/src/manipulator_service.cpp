@@ -108,9 +108,9 @@ private:
     geometry_msgs::msg::PoseStamped grasp_pose = target_pose;
     grasp_pose.pose.position.z = target_pose.pose.position.z - 0.02 + finger_length;
     // Orientation: Z axis points into the wrist (down)
-    grasp_pose.pose.orientation.x = 0.0;
+    grasp_pose.pose.orientation.x = 1.0;
     grasp_pose.pose.orientation.y = 0.0;
-    grasp_pose.pose.orientation.z = 1.0;
+    grasp_pose.pose.orientation.z = 0.0;
     grasp_pose.pose.orientation.w = 0.0;
 
     geometry_msgs::msg::PoseStamped above_pose = grasp_pose;
