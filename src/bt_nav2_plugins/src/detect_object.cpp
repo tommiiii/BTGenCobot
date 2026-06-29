@@ -526,7 +526,7 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     // Project to ground plane (z=0 for 2D navigation)
     pose_map.pose.position.z = 0.0;
     
-    const double approach_offset = 0.35;  // Nav2 goal 35cm from object
+    const double approach_offset = 0.25;  // Nav2 goal 25cm from object
     
     // Always apply the offset so the robot maintains a safe standoff distance
     // If it's too close, it will back up. If it's too far, it will approach.
