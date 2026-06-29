@@ -15,14 +15,19 @@ public:
   ManipulatorService(const rclcpp::NodeOptions & options = rclcpp::NodeOptions())
   : Node("manipulator_service", options)
   {
+    // Create a reentrant callback group so service callbacks and action clients don't deadlock
+    callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+
     // Setup service server
     service_ = this->create_service<btgencobot_interfaces::srv::ManipulatorAction>(
       "/manipulator_action",
-      std::bind(&ManipulatorService::handle_request, this, _1, _2));
+      std::bind(&ManipulatorService::handle_request, this, _1, _2),
+      rmw_qos_profile_services_default,
+      callback_group_);
       
     // Setup Gripper Action Client
     gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::GripperCommand>(
-      this, "/parallel_gripper_controller/gripper_cmd");
+      this, "/parallel_gripper_controller/gripper_cmd", callback_group_);
       
     RCLCPP_INFO(this->get_logger(), "Manipulator service (MoveIt 2) ready.");
   }
@@ -42,6 +47,7 @@ private:
   rclcpp::Service<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr service_;
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_arm_;
   rclcpp_action::Client<control_msgs::action::GripperCommand>::SharedPtr gripper_action_client_;
+  rclcpp::CallbackGroup::SharedPtr callback_group_;
   
   // Gripper settings
   const double GRIPPER_OPEN = 0.096;
