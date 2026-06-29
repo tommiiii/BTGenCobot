@@ -4,6 +4,7 @@
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <btgencobot_interfaces/srv/manipulator_action.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <std_srvs/srv/empty.hpp>
 #include <control_msgs/action/follow_joint_trajectory.hpp>
 
 using namespace std::placeholders;
@@ -114,6 +115,14 @@ private:
     grasp_pose.pose.orientation.y = 0.70710678;
     grasp_pose.pose.orientation.z = 0.0;
     grasp_pose.pose.orientation.w = 0.70710678;
+
+    // Clear octomap to prevent goal state collision with the object itself
+    auto clear_client = this->create_client<std_srvs::srv::Empty>("/clear_octomap");
+    if (clear_client->wait_for_service(std::chrono::seconds(1))) {
+      auto req = std::make_shared<std_srvs::srv::Empty::Request>();
+      clear_client->async_send_request(req);
+      rclcpp::sleep_for(std::chrono::milliseconds(500)); // wait for octomap to clear
+    }
 
     // 2. Move directly to grasp pose using free space planning
     RCLCPP_INFO(this->get_logger(), "Planning path to grasp pose...");
