@@ -40,26 +40,26 @@ DetectObject::DetectObject(
   // Create service client on our own node so we can spin it ourselves
   detect_client_ = sub_node_->create_client<btgencobot_interfaces::srv::DetectObject>("/detect_object");
 
-  // Use sensor data QoS for camera topics (best effort, volatile)
-  auto sensor_qos = rclcpp::SensorDataQoS();
+  // Use QoS matching the Gazebo camera publisher (RELIABLE, volatile)
+  auto camera_qos = rclcpp::QoS(10).reliability(rclcpp::ReliabilityPolicy::Reliable);
 
   // Subscribe to camera topics on our own node
   image_sub_ = sub_node_->create_subscription<sensor_msgs::msg::Image>(
-    "/camera",
-    sensor_qos,
+    "/head_front_camera/image",
+    camera_qos,
     std::bind(&DetectObject::imageCallback, this, std::placeholders::_1));
 
   depth_sub_ = sub_node_->create_subscription<sensor_msgs::msg::Image>(
-    "/camera/depth",
-    sensor_qos,
+    "/head_front_camera/depth_image",
+    camera_qos,
     std::bind(&DetectObject::depthCallback, this, std::placeholders::_1));
 
   camera_info_sub_ = sub_node_->create_subscription<sensor_msgs::msg::CameraInfo>(
-    "/camera/camera_info",
-    sensor_qos,
+    "/head_front_camera/camera_info",
+    camera_qos,
     std::bind(&DetectObject::cameraInfoCallback, this, std::placeholders::_1));
 
-  RCLCPP_INFO(node_->get_logger(), "Subscribed to /camera, /camera/depth, /camera/camera_info");
+  RCLCPP_INFO(node_->get_logger(), "Subscribed to /head_front_camera/image, /head_front_camera/depth_image, /head_front_camera/camera_info");
 }
 
 BT::NodeStatus DetectObject::onStart()
@@ -145,10 +145,18 @@ BT::NodeStatus DetectObject::onRunning()
       "No camera_info received. Using default calibration values. "
       "3D pose estimation may be inaccurate!");
     // Set default values (typical for RGB cameras)
-    fx_ = 554.3;
-    fy_ = 554.3;
-    cx_ = 320.5;
-    cy_ = 240.5;
+    fx_ = 522.19;
+    fy_ = 522.19;
+    if (latest_image_) {
+      cx_ = latest_image_->width / 2.0;
+      cy_ = latest_image_->height / 2.0;
+      // Rough approximation for fx/fy based on typical FOV (~60 deg)
+      fx_ = latest_image_->width * 0.8;
+      fy_ = fx_;
+    } else {
+      cx_ = 320.0;
+      cy_ = 240.0;
+    }
   }
 
   // If service call not sent yet, send it
@@ -273,6 +281,10 @@ BT::NodeStatus DetectObject::onRunning()
         for (int y = inner_y1; y <= inner_y2; y += sample_stride) {
           for (int x = inner_x1; x <= inner_x2; x += sample_stride) {
             float d = depth_ptr->image.at<float>(y, x);
+            // Handle depth images in millimeters (often converted to float without scaling)
+            if (d > 10.0) {
+              d = d / 1000.0;
+            }
             if (!std::isnan(d) && d > 0.1 && d < 10.0) {
               depth_samples.push_back({d, x, y});
             }
@@ -360,8 +372,11 @@ BT::NodeStatus DetectObject::onRunning()
       "No depth data available. Using default 1.5m");
   }
 
-  // Use camera optical frame for pose estimation
-  std::string camera_frame = "camera_rgb_optical_frame";
+  // Use camera optical frame from the image header for accurate TF
+  std::string camera_frame = latest_image_->header.frame_id;
+  if (camera_frame.empty()) {
+    camera_frame = "head_front_camera_depth_optical_frame"; // TIAGo default fallback
+  }
 
   geometry_msgs::msg::PoseStamped target_pose = pixelToPose(
     refined_center_x,
@@ -383,8 +398,13 @@ BT::NodeStatus DetectObject::onRunning()
     target_pose.pose.position.y,
     response->confidence);
 
-  // Set output ports (only approach pose for navigation - object pose computed by PickObject/PlaceObject)
+  // Set output ports
+  // target_pose is the navigation approach pose (offset from object)
   setOutput("target_pose", target_pose);
+  // object_pose is the raw 3D object position in map frame (for PickObject/PlaceObject to use directly)
+  setOutput("object_pose", raw_object_pose_);
+  // Also store on shared blackboard so subsequent nodes can access it without port wiring
+  config().blackboard->set("initial_object_pose", raw_object_pose_);
   setOutput("detected", true);
   setOutput("confidence", static_cast<double>(response->confidence));
 
@@ -463,6 +483,10 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
       "map",
       tf2::durationFromSec(1.0));
 
+    // Store raw object 3D pose for PickObject/PlaceObject (before approach offset)
+    raw_object_pose_ = pose_map;
+    raw_object_pose_.pose.orientation.w = 1.0;
+
     // Store original object position
     double obj_x = pose_map.pose.position.x;
     double obj_y = pose_map.pose.position.y;
@@ -503,11 +527,9 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     pose_map.pose.position.z = 0.0;
     
     // Set navigation goal at a distance where the camera can still see the object clearly.
-    // The pick/place nodes will do fine adjustments using direct cmd_vel to get within arm reach.
-    // This offset should be large enough that:
-    // - The object remains visible and recognizable in the camera frame
-    // - The robot has room to re-detect and adjust during pick/place
-    const double approach_offset = 0.45;  // Nav2 goal 45cm from object
+    // TIAGo's 7-DOF arm has ~0.8m reach, so a comfortable approach offset gives the camera
+    // a good viewing angle while keeping the object within arm's reach.
+    const double approach_offset = 0.55;  // Nav2 goal 55cm from object
     
     if (distance_to_object > approach_offset) {
       // Normalize direction vector and place goal close to object

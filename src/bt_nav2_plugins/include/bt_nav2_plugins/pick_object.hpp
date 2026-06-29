@@ -7,14 +7,15 @@
 
 #include "behaviortree_cpp/action_node.h"
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
+#include "control_msgs/action/follow_joint_trajectory.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "btgencobot_interfaces/srv/manipulator_action.hpp"
 #include "btgencobot_interfaces/srv/detect_object.hpp"
-#include "geometry_msgs/msg/twist.hpp"
 
 namespace bt_nav2_plugins
 {
@@ -22,18 +23,18 @@ namespace bt_nav2_plugins
 /**
  * @brief BT node to pick up an object with the manipulator
  *
- * This node performs close-range object detection before picking for accurate pose estimation.
- * The robot should already be positioned near the object (via prior navigation).
+ * Flow:
+ * 1. Tilt head down so camera can see objects near the robot
+ * 2. Capture fresh camera image for close-range detection
+ * 3. Call /detect_object service for accurate pose estimation
+ * 4. Call /manipulator_action service to execute pick
+ * 5. Tilt head back to neutral
+ *
+ * Falls back to using the initial detection's cached pose if head control is unavailable.
  *
  * Input Ports:
  *   object_description - Natural language description of object to pick (e.g., "red cup")
  *   box_threshold - Detection confidence threshold (default: 0.35)
- *
- * The node:
- * 1. Captures current camera image
- * 2. Calls /detect_object service for accurate close-range detection
- * 3. Computes object pose from detection result
- * 4. Calls /manipulator_action service to execute pick
  */
 class PickObject : public BT::StatefulActionNode
 {
@@ -62,6 +63,13 @@ private:
   void depthCallback(const sensor_msgs::msg::Image::SharedPtr msg);
   void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
 
+  // Non-blocking head tilt: returns true if goal was accepted
+  using GoalHandle = rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>;
+  bool sendHeadTiltGoalAsync(
+    double head_2_radians,
+    double duration_sec,
+    std::shared_future<GoalHandle::SharedPtr> & out_future);
+
   // Convert detection result to 3D pose
   geometry_msgs::msg::PoseStamped computeObjectPose(
     float center_x,
@@ -71,10 +79,10 @@ private:
 
   // Nav2's node for logging
   rclcpp::Node::SharedPtr node_;
-  
+
   // Separate node for service calls and subscriptions
   rclcpp::Node::SharedPtr service_node_;
-  
+
   // TF2 for coordinate transforms
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -82,7 +90,10 @@ private:
   // Service clients
   rclcpp::Client<btgencobot_interfaces::srv::DetectObject>::SharedPtr detect_client_;
   rclcpp::Client<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr manipulator_client_;
-  
+
+  // Head action client (tilt camera down to see objects near robot)
+  rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr head_client_;
+
   // Subscriptions for camera data
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
@@ -91,7 +102,7 @@ private:
   // Latest camera data
   sensor_msgs::msg::Image::SharedPtr latest_image_;
   sensor_msgs::msg::Image::SharedPtr latest_depth_;
-  
+
   // Camera calibration
   bool has_camera_info_;
   double fx_, fy_, cx_, cy_;
@@ -102,24 +113,37 @@ private:
 
   // State machine for the pick operation
   enum class PickState {
+    TILTING_HEAD,
     WAITING_FOR_IMAGE,
     DETECTING,
-    APPROACHING,  // Final approach using direct cmd_vel
     PICKING,
     DONE
   };
   PickState state_;
-  
+
+  // Head tilt state
+  bool head_tilt_sent_;
+  bool head_tilt_done_;
+  GoalHandle::SharedPtr head_goal_handle_;
+  std::shared_future<GoalHandle::SharedPtr> head_goal_future_;
+  std::shared_future<GoalHandle::WrappedResult> head_result_future_;
+  static constexpr double HEAD_TILT_DOWN = -1.047;  // -60° (max down) in radians
+  static constexpr double HEAD_TILT_NEUTRAL = 0.0;
+  static constexpr double HEAD_TILT_DURATION = 2.0;  // seconds for trajectory
+  static constexpr double HEAD_TILT_TIMEOUT = 5.0;   // max wait for result
+  static constexpr double POST_TILT_SETTLE_SEC = 1.0; // wait after tilt before accepting images
+  rclcpp::Time head_settle_until_;                    // don't accept images before this time
+
   // Detection state
   btgencobot_interfaces::srv::DetectObject::Response::SharedPtr detection_response_;
   std::atomic<bool> detection_sent_;
   std::atomic<bool> detection_received_;
-  
+
   // Pick state
   btgencobot_interfaces::srv::ManipulatorAction::Response::SharedPtr pick_response_;
   std::atomic<bool> pick_sent_;
   std::atomic<bool> pick_received_;
-  
+
   // Computed object pose and dimensions
   geometry_msgs::msg::PoseStamped object_pose_;
   double object_height_;
@@ -127,18 +151,6 @@ private:
 
   // Timing
   rclcpp::Time operation_start_time_;
-
-  // Final approach - direct motion control bypassing Nav2 costmap
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
-  float detected_depth_;  // Object depth from detection (for approach distance)
-  rclcpp::Time approach_start_time_;
-  bool approach_done_;  // Flag to prevent infinite approach loops
-  static constexpr double APPROACH_VELOCITY = 0.08;  // m/s - slow for safety
-  // Distance from robot base_link to object for arm to reach
-  // Arm reaches ~0.286m from link1, which is at -0.092m from base_link
-  // So arm can reach ~0.19m in front of base_link
-  // Stop a bit further back to avoid collision and give arm room to maneuver
-  static constexpr double MIN_APPROACH_DISTANCE = 0.22;  // Stop 22cm from object
 };
 
 }  // namespace bt_nav2_plugins

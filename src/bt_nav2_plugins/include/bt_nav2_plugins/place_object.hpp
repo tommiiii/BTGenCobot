@@ -14,7 +14,6 @@
 #include "tf2_ros/transform_listener.h"
 #include "btgencobot_interfaces/srv/manipulator_action.hpp"
 #include "btgencobot_interfaces/srv/detect_object.hpp"
-#include "geometry_msgs/msg/twist.hpp"
 
 namespace bt_nav2_plugins
 {
@@ -22,8 +21,9 @@ namespace bt_nav2_plugins
 /**
  * @brief BT node to place an object with the manipulator
  *
- * This node performs close-range detection of the place location before placing.
  * The robot should already be positioned near the place location (via prior navigation).
+ * Since Nav2 brings the robot to ~0.45m from the target, TIAGo's 7-DOF arm
+ * (reach ~0.8m) can reach it directly without a second approach.
  *
  * Input Ports:
  *   place_description - Natural language description of where to place (e.g., "table", "box")
@@ -71,10 +71,10 @@ private:
 
   // Nav2's node for logging
   rclcpp::Node::SharedPtr node_;
-  
+
   // Separate node for service calls and subscriptions
   rclcpp::Node::SharedPtr service_node_;
-  
+
   // TF2 for coordinate transforms
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -82,7 +82,7 @@ private:
   // Service clients
   rclcpp::Client<btgencobot_interfaces::srv::DetectObject>::SharedPtr detect_client_;
   rclcpp::Client<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr manipulator_client_;
-  
+
   // Subscriptions for camera data
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
@@ -91,7 +91,7 @@ private:
   // Latest camera data
   sensor_msgs::msg::Image::SharedPtr latest_image_;
   sensor_msgs::msg::Image::SharedPtr latest_depth_;
-  
+
   // Camera calibration
   bool has_camera_info_;
   double fx_, fy_, cx_, cy_;
@@ -104,39 +104,26 @@ private:
   enum class PlaceState {
     WAITING_FOR_IMAGE,
     DETECTING,
-    APPROACHING,  // Final approach using direct cmd_vel
     PLACING,
     DONE
   };
   PlaceState state_;
-  
+
   // Detection state
   btgencobot_interfaces::srv::DetectObject::Response::SharedPtr detection_response_;
   std::atomic<bool> detection_sent_;
   std::atomic<bool> detection_received_;
-  
+
   // Place state
   btgencobot_interfaces::srv::ManipulatorAction::Response::SharedPtr place_response_;
   std::atomic<bool> place_sent_;
   std::atomic<bool> place_received_;
-  
+
   // Computed place pose
   geometry_msgs::msg::PoseStamped place_pose_;
 
   // Timing
   rclcpp::Time operation_start_time_;
-
-  // Final approach - direct motion control bypassing Nav2 costmap
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
-  float detected_depth_;  // Place location depth from detection
-  rclcpp::Time approach_start_time_;
-  bool approach_done_;  // Flag to prevent infinite approach loops
-  static constexpr double APPROACH_VELOCITY = 0.08;  // m/s - slow for safety
-  // Distance from robot base_link to place location for arm to reach
-  // Arm reaches ~0.286m from link1, which is at -0.092m from base_link
-  // So arm can reach ~0.19m in front of base_link
-  // Stop a bit further back to avoid collision and give arm room to maneuver
-  static constexpr double MIN_APPROACH_DISTANCE = 0.22;  // Stop 22cm from target
 };
 
 }  // namespace bt_nav2_plugins

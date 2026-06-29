@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Florence-2 Object Detection Service Node
+"""GroundingDINO Object Detection Service Node
 
 This ROS2 service node provides object detection using:
-- Florence-2 for text-prompted object detection (VLM-based, understands attributes)
+- GroundingDINO-Tiny for text-prompted open-vocabulary object detection
 - Bounding box sampling for depth/pose estimation
 
 Service: /detect_object (btgencobot_interfaces/srv/DetectObject)
@@ -19,7 +19,7 @@ import time
 
 try:
     import torch
-    from transformers import AutoProcessor, AutoModelForCausalLM
+    from transformers import AutoProcessor, GroundingDinoForObjectDetection
     from PIL import Image as PILImage
     DEPENDENCIES_AVAILABLE = True
     import_error = None
@@ -28,11 +28,11 @@ except ImportError as e:
     import_error = str(e)
 
 
-class Florence2Service(Node):
-    """ROS2 service node for Florence-2 object detection with bounding box pose estimation"""
+class GroundingDINOService(Node):
+    """ROS2 service node for GroundingDINO object detection with bounding box pose estimation"""
 
     def __init__(self):
-        super().__init__('florence2_service')
+        super().__init__('grounding_dino_service')
         self._declare_parameters()
         self._setup_device()
         self._initialize_models()
@@ -41,12 +41,12 @@ class Florence2Service(Node):
     def _declare_parameters(self):
         """Declare and load ROS parameters"""
         self.declare_parameter('use_mock', False)
-        self.declare_parameter('florence2_model', 'microsoft/Florence-2-base-ft')
+        self.declare_parameter('model_name', 'IDEA-Research/grounding-dino-tiny')
         self.declare_parameter('device', 'auto')
         self.declare_parameter('publish_debug_images', True)
 
         self.use_mock = self.get_parameter('use_mock').value
-        self.florence2_model_name = self.get_parameter('florence2_model').value
+        self.model_name = self.get_parameter('model_name').value
         self.device_param = self.get_parameter('device').value
         self.publish_debug_images = self.get_parameter('publish_debug_images').value
 
@@ -57,14 +57,14 @@ class Florence2Service(Node):
         else:
             self.device = self.device_param
 
-        self.get_logger().info('Florence-2 Service Node starting...')
+        self.get_logger().info('GroundingDINO Service Node starting...')
         self.get_logger().info(f'Use mock: {self.use_mock}')
         self.get_logger().info(f'Device: {self.device}')
 
     def _initialize_models(self):
-        """Initialize Florence-2 model or fallback to mock mode"""
-        self.florence2_model = None
-        self.florence2_processor = None
+        """Initialize GroundingDINO model or fallback to mock mode"""
+        self.model = None
+        self.processor = None
         self.bridge = CvBridge()
 
         if not self.use_mock:
@@ -79,27 +79,23 @@ class Florence2Service(Node):
             self.get_logger().warning('Running in MOCK MODE - will return fake detections')
 
     def _load_models(self):
-        """Load Florence-2 model"""
+        """Load GroundingDINO model (natively integrated in transformers, no trust_remote_code needed)"""
         try:
-            # Load Florence-2
-            self.get_logger().info('Loading Florence-2 model...')
-            self.get_logger().info(f'Model: {self.florence2_model_name}')
+            self.get_logger().info('Loading GroundingDINO-Tiny model...')
+            self.get_logger().info(f'Model: {self.model_name}')
 
             torch_dtype = torch.float16 if self.device == 'cuda' else torch.float32
-            self.florence2_model = AutoModelForCausalLM.from_pretrained(
-                self.florence2_model_name,
-                torch_dtype=torch_dtype,
-                trust_remote_code=True,
-                attn_implementation='eager'  # Workaround for transformers compatibility
+            self.processor = AutoProcessor.from_pretrained(self.model_name)
+            self.model = GroundingDinoForObjectDetection.from_pretrained(
+                self.model_name,
+                dtype=torch_dtype,
             ).to(self.device)
-            self.florence2_processor = AutoProcessor.from_pretrained(
-                self.florence2_model_name,
-                trust_remote_code=True
-            )
-            self.get_logger().info('Florence-2 model loaded successfully')
+            self.model.eval()
+
+            self.get_logger().info('GroundingDINO model loaded successfully')
 
         except Exception as e:
-            self.get_logger().error(f'Failed to load models: {e}')
+            self.get_logger().error(f'Failed to load GroundingDINO model: {e}')
             import traceback
             self.get_logger().error(traceback.format_exc())
             self.get_logger().warning('Falling back to MOCK mode')
@@ -112,25 +108,22 @@ class Florence2Service(Node):
             '/detect_object',
             self.detect_callback
         )
-        self.debug_image_pub = self.create_publisher(Image, '/florence2/debug_image', 10)
+        self.debug_image_pub = self.create_publisher(Image, '/grounding_dino/debug_image', 10)
         self.get_logger().info('Service /detect_object ready')
 
     def detect_callback(self, request, response):
         """Handle detection service request"""
         try:
             start_time = time.time()
-            
-            # Convert ROS Image to OpenCV
+
             cv_image = self.bridge.imgmsg_to_cv2(request.image, desired_encoding='rgb8')
             self.get_logger().info(
                 f'Detection request: "{request.object_description}" '
                 f'(image: {cv_image.shape[1]}x{cv_image.shape[0]})'
             )
 
-            # Process detection
             result = self._process_detection(cv_image, request)
 
-            # Fill response
             response.detected = result['detected']
             response.confidence = result['confidence']
             response.center_x = result['center_x']
@@ -139,7 +132,6 @@ class Florence2Service(Node):
             response.phrase = result['phrase']
             response.error_message = result.get('error', '')
 
-            # Add mask to response
             if 'mask' in result and result['mask'] is not None:
                 response.mask = result['mask'].flatten().tolist()
                 response.mask_height = result['mask'].shape[0]
@@ -161,7 +153,6 @@ class Florence2Service(Node):
             else:
                 self.get_logger().warn(f'Object not detected: {response.error_message} ({elapsed:.1f}ms)')
 
-            # Publish debug visualization
             if self.publish_debug_images:
                 all_detections = result.get('all_detections', [])
                 self._publish_debug_image(cv_image, result, all_detections)
@@ -175,106 +166,88 @@ class Florence2Service(Node):
             return self._create_error_response(response, str(e))
 
     def _process_detection(self, image, request):
-        """Process detection with Florence-2"""
+        """Process detection with GroundingDINO"""
         if self.use_mock:
             return self._mock_detect(image, request.object_description)
         else:
-            return self._detect_object(image, request.object_description)
-
-    def _detect_object(self, image, text_prompt):
-        """Run Florence-2 open vocabulary detection to find the object matching text description"""
-        try:
-            # Convert to PIL Image
-            pil_image = PILImage.fromarray(image)
-
-            # Use Florence-2's Open Vocabulary Detection task
-            # This translates to: "Locate {text_prompt} in the image."
-            task_prompt = '<OPEN_VOCABULARY_DETECTION>'
-            
-            # Clean up the prompt - replace underscores with spaces for natural language
-            clean_prompt = text_prompt.replace('_', ' ')
-            prompt = task_prompt + clean_prompt
-
-            self.get_logger().info(f'Using Florence-2 OVD: "Locate {clean_prompt} in the image."')
-            
-            # Prepare inputs
-            inputs = self.florence2_processor(
-                text=prompt,
-                images=pil_image,
-                return_tensors="pt"
-            ).to(self.device, self.florence2_model.dtype)
-
-            # Generate detection
-            with torch.no_grad():
-                generated_ids = self.florence2_model.generate(
-                    input_ids=inputs["input_ids"],
-                    pixel_values=inputs["pixel_values"],
-                    max_new_tokens=256,
-                    num_beams=1,
-                    do_sample=False,
-                    use_cache=False,
-                )
-
-            # Decode results
-            generated_text = self.florence2_processor.batch_decode(
-                generated_ids,
-                skip_special_tokens=False
-            )[0]
-
-            self.get_logger().info(f'Florence-2 generated text: {generated_text}')
-
-            # Parse Florence-2 output
-            parsed_answer = self.florence2_processor.post_process_generation(
-                generated_text,
-                task=task_prompt,
-                image_size=(pil_image.width, pil_image.height)
+            return self._detect_object(
+                image,
+                request.object_description,
+                box_threshold=request.box_threshold
             )
 
-            self.get_logger().info(f'Florence-2 parsed output: {parsed_answer}')
+    def _detect_object(self, image, text_prompt, box_threshold=0.3):
+        """Run GroundingDINO open-vocabulary detection to find the object matching text description"""
+        try:
+            h, w = image.shape[:2]
 
-            # Extract detection from OVD result
-            if task_prompt not in parsed_answer:
+            pil_image = PILImage.fromarray(image)
+
+            clean_prompt = text_prompt.replace('_', ' ')
+            if not clean_prompt.endswith('.'):
+                clean_prompt = clean_prompt + '.'
+
+            self.get_logger().info(f'GroundingDINO detecting: "{clean_prompt}" with threshold {box_threshold}')
+
+            inputs = self.processor(
+                images=pil_image,
+                text=clean_prompt,
+                return_tensors="pt"
+            ).to(self.device)
+
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+
+            results = self.processor.image_processor.post_process_object_detection(
+                outputs,
+                threshold=box_threshold,
+                target_sizes=[(h, w)]
+            )
+
+            result = results[0]
+
+            if len(result['boxes']) == 0:
                 return self._create_detection_result(
                     detected=False,
-                    error=f'No object found matching "{text_prompt}"'
+                    error=f'No object found matching "{text_prompt}" at threshold {box_threshold}'
                 )
 
-            detection_data = parsed_answer[task_prompt]
-            bboxes = detection_data.get('bboxes', [])
+            scores = result['scores'].tolist()
+            boxes = result['boxes'].tolist()
 
-            if len(bboxes) == 0:
-                return self._create_detection_result(
-                    detected=False,
-                    error=f'No object found matching "{text_prompt}"'
-                )
+            best_idx = int(np.argmax(scores))
+            best_score = scores[best_idx]
+            best_box = boxes[best_idx]
 
-            # Take the first bounding box (OVD should return the most relevant match first)
-            bbox = bboxes[0]
-            x1, y1, x2, y2 = bbox
+            x1, y1, x2, y2 = best_box
             cx = (x1 + x2) / 2
             cy = (y1 + y2) / 2
 
-            self.get_logger().info(f'Found "{text_prompt}" at ({cx:.1f}, {cy:.1f}), bbox: {bbox}')
+            all_detections = []
+            for i in range(len(boxes)):
+                box = boxes[i]
+                score = scores[i]
+                all_detections.append({
+                    'bbox': [float(box[0]), float(box[1]), float(box[2]), float(box[3])],
+                    'center_x': float((box[0] + box[2]) / 2),
+                    'center_y': float((box[1] + box[3]) / 2),
+                    'confidence': float(score),
+                    'phrase': text_prompt
+                })
 
             return self._create_detection_result(
                 detected=True,
-                confidence=1.0,
+                confidence=float(best_score),
                 center_x=float(cx),
                 center_y=float(cy),
                 bbox=[float(x1), float(y1), float(x2), float(y2)],
-                phrase=text_prompt,  # Use the original query, not model's label
+                phrase=text_prompt,
                 mask=None,
-                all_detections=[{
-                    'bbox': [float(x1), float(y1), float(x2), float(y2)],
-                    'center_x': float(cx),
-                    'center_y': float(cy),
-                    'confidence': 1.0,
-                    'phrase': text_prompt
-                }]
+                all_detections=all_detections
             )
 
         except Exception as e:
-            self.get_logger().error(f'Florence-2 inference failed: {e}')
+            self.get_logger().error(f'GroundingDINO inference failed: {e}')
             import traceback
             self.get_logger().error(traceback.format_exc())
             return self._create_detection_result(detected=False, error=str(e))
@@ -302,7 +275,6 @@ class Florence2Service(Node):
             bbox=[x1, y1, x2, y2],
             phrase=text_prompt
         )
-
 
     def _create_detection_result(self, detected=False, confidence=0.0, center_x=-1.0,
                                   center_y=-1.0, bbox=None, phrase='', error='', mask=None,
@@ -339,21 +311,17 @@ class Florence2Service(Node):
         try:
             debug_img = cv2.cvtColor(image.copy(), cv2.COLOR_RGB2BGR)
 
-            # Draw all detections with bounding boxes
             for i, det in enumerate(all_detections[:5]):
-                color = (0, 255, 0) if i == 0 else (0, 165, 255)  # Green for selected, orange for others
+                color = (0, 255, 0) if i == 0 else (0, 165, 255)
 
-                # Draw bounding box
                 x1, y1, x2, y2 = [int(v) for v in det['bbox']]
                 cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, 2)
 
-                # Draw center point
                 cx, cy = int(det['center_x']), int(det['center_y'])
                 cv2.circle(debug_img, (cx, cy), 6, color, -1)
                 cv2.circle(debug_img, (cx, cy), 6, (255, 255, 255), 2)
 
-                # Label
-                label = f"#{i+1}: {det['phrase']}"
+                label = f"#{i+1}: {det['phrase']} ({det['confidence']:.2f})"
                 label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
                 cv2.rectangle(debug_img,
                             (x1, y1 - label_size[1] - 15),
@@ -361,21 +329,20 @@ class Florence2Service(Node):
                             color, -1)
                 cv2.putText(debug_img, label, (x1 + 5, y1 - 7),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # Publish
+
             debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
             debug_msg = self.bridge.cv2_to_imgmsg(debug_img_rgb, encoding='rgb8')
             debug_msg.header.stamp = self.get_clock().now().to_msg()
             debug_msg.header.frame_id = 'camera_rgb_optical_frame'
             self.debug_image_pub.publish(debug_msg)
-            
+
         except Exception as e:
             self.get_logger().error(f'Failed to publish debug image: {e}')
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Florence2Service()
+    node = GroundingDINOService()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
