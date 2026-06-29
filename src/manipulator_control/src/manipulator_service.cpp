@@ -50,7 +50,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   
   // Gripper settings
-  const double GRIPPER_OPEN = 0.096;
+  const double GRIPPER_OPEN = 0.044;
   const double GRIPPER_CLOSED = 0.0;
 
   void handle_request(
