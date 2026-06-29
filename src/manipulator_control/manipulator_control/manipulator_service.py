@@ -368,9 +368,16 @@ class ManipulatorService(Node):
         while not future.done() and time.time() - start < 5.0:
             time.sleep(0.05)
         
-        if future.done() and future.result().accepted:
-            return True
-        return False
+        if not future.done() or not future.result().accepted:
+            return False
+            
+        # Wait for actual execution to finish
+        result_future = future.result().get_result_async()
+        start = time.time()
+        while not result_future.done() and time.time() - start < duration + 5.0:
+            time.sleep(0.05)
+            
+        return result_future.done()
 
     def _send_arm_trajectory(self, positions: list, duration: float) -> bool:
         if not self.arm_action_client.server_is_ready():
@@ -390,9 +397,16 @@ class ManipulatorService(Node):
         while not future.done() and time.time() - start < 5.0:
             time.sleep(0.05)
             
-        if future.done() and future.result().accepted:
-            return True
-        return False
+        if not future.done() or not future.result().accepted:
+            return False
+            
+        # Wait for actual execution to finish
+        result_future = future.result().get_result_async()
+        start = time.time()
+        while not result_future.done() and time.time() - start < duration + 5.0:
+            time.sleep(0.05)
+            
+        return result_future.done()
 
     def _move_gripper(self, position: float, duration: float = 1.0, force_grasp: bool = False) -> bool:
         if not self.gripper_action_client.server_is_ready():
@@ -407,10 +421,16 @@ class ManipulatorService(Node):
         while not future.done() and time.time() - start < 5.0:
             time.sleep(0.05)
             
-        if future.done() and future.result().accepted:
-            return True
-        return False
-
+        if not future.done() or not future.result().accepted:
+            return False
+            
+        # Wait for actual execution to finish
+        result_future = future.result().get_result_async()
+        start = time.time()
+        while not result_future.done() and time.time() - start < duration + 5.0:
+            time.sleep(0.05)
+            
+        return result_future.done()
 
 def main(args=None):
     rclpy.init(args=args)
