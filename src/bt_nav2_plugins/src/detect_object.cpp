@@ -529,19 +529,14 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     // Set navigation goal at a distance where the camera can still see the object clearly.
     // TIAGo's 7-DOF arm has ~0.8m reach, so a comfortable approach offset gives the camera
     // a good viewing angle while keeping the object within arm's reach.
-    const double approach_offset = 0.40;  // Nav2 goal 40cm from object
+    const double approach_offset = 0.60;  // Nav2 goal 60cm from object
     
-    if (distance_to_object > approach_offset) {
-      // Normalize direction vector and place goal close to object
-      double unit_dx = dx / distance_to_object;
-      double unit_dy = dy / distance_to_object;
-      pose_map.pose.position.x = obj_x - unit_dx * approach_offset;
-      pose_map.pose.position.y = obj_y - unit_dy * approach_offset;
-    } else {
-      // Already very close, just use object position
-      pose_map.pose.position.x = obj_x;
-      pose_map.pose.position.y = obj_y;
-    }
+    // Always apply the offset so the robot maintains a safe standoff distance
+    // If it's too close, it will back up. If it's too far, it will approach.
+    double unit_dx = dx / distance_to_object;
+    double unit_dy = dy / distance_to_object;
+    pose_map.pose.position.x = obj_x - unit_dx * approach_offset;
+    pose_map.pose.position.y = obj_y - unit_dy * approach_offset;
 
     // Face toward object
     pose_map.pose.orientation.x = q.x();
