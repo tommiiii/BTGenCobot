@@ -279,11 +279,17 @@ private:
     auto future = promise->get_future();
 
     send_goal_options.result_callback = 
-      [promise](const rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::WrappedResult & result) {
+      [promise, force_grasp](const rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::WrappedResult & result) {
         if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
           promise->set_value(true);
         } else {
-          promise->set_value(false);
+          if (force_grasp) {
+            // When grasping an object, the trajectory will often abort because the object blocks the fingers from reaching 0.0.
+            // This is expected behavior for a successful grasp, so we treat it as a success.
+            promise->set_value(true);
+          } else {
+            promise->set_value(false);
+          }
         }
       };
 
