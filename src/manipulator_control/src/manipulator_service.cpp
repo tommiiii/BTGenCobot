@@ -1,7 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
-#include <moveit/move_group_interface/move_group_interface.h>
-#include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/move_group_interface/move_group_interface.hpp>
+#include <moveit/planning_scene_interface/planning_scene_interface.hpp>
 #include <btgencobot_interfaces/srv/manipulator_action.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_srvs/srv/empty.hpp>
@@ -23,7 +23,7 @@ public:
     service_ = this->create_service<btgencobot_interfaces::srv::ManipulatorAction>(
       "/manipulator_action",
       std::bind(&ManipulatorService::handle_request, this, _1, _2),
-      rmw_qos_profile_services_default,
+      rclcpp::ServicesQoS(),
       callback_group_);
       
     // Setup Gripper Action Client
@@ -90,6 +90,27 @@ private:
     }
   }
 
+  // Clamp torso_lift_joint into its valid range [0, 0.35] before planning.
+  // After a pick the torso is fully lowered (0.0), but the state monitor often
+  // reports a tiny negative value (e.g. -9.2e-12) due to floating-point noise,
+  // which makes the CheckStartStateBounds planning adapter abort the pipeline.
+  void sanitize_start_state()
+  {
+    moveit::core::RobotStatePtr current_state = move_group_arm_->getCurrentState();
+    if (!current_state) {
+      return;
+    }
+    const moveit::core::JointModel * torso_jm = current_state->getJointModel("torso_lift_joint");
+    if (torso_jm) {
+      const double * torso_pos = current_state->getJointPositions(torso_jm);
+      if (torso_pos && *torso_pos < 0.0) {
+        double clamped = 0.0;
+        current_state->setJointPositions(torso_jm, &clamped);
+      }
+    }
+    move_group_arm_->setStartState(*current_state);
+  }
+
   bool execute_pick(const geometry_msgs::msg::PoseStamped & target_pose)
   {
     if (!move_group_arm_) {
@@ -123,6 +144,7 @@ private:
 
     // 1. Move to above pose (free space)
     RCLCPP_INFO(this->get_logger(), "Planning path to above pose...");
+    sanitize_start_state();
     move_group_arm_->setPoseTarget(above_pose);
     
     moveit::planning_interface::MoveGroupInterface::Plan above_plan;
@@ -148,15 +170,17 @@ private:
 
     // 2. Move down to grasp pose (Cartesian preferred, fallback to OMPL)
     RCLCPP_INFO(this->get_logger(), "Moving down to grasp pose...");
+    sanitize_start_state();
     std::vector<geometry_msgs::msg::Pose> down_waypoints;
     down_waypoints.push_back(grasp_pose.pose);
     moveit_msgs::msg::RobotTrajectory down_trajectory;
-    double fraction = move_group_arm_->computeCartesianPath(down_waypoints, 0.01, 0.0, down_trajectory);
+    double fraction = move_group_arm_->computeCartesianPath(down_waypoints, 0.01, down_trajectory);
     
     if (fraction >= 0.9) {
       success = (move_group_arm_->execute(down_trajectory) == moveit::core::MoveItErrorCode::SUCCESS);
     } else {
       RCLCPP_WARN(this->get_logger(), "Cartesian down failed (fraction: %f), using free space...", fraction);
+      sanitize_start_state();
       move_group_arm_->setPoseTarget(grasp_pose);
       moveit::planning_interface::MoveGroupInterface::Plan grasp_plan;
       if (move_group_arm_->plan(grasp_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
@@ -182,18 +206,20 @@ private:
 
     // 5. Move back up (Cartesian path)
     RCLCPP_INFO(this->get_logger(), "Lifting object...");
+    sanitize_start_state();
     geometry_msgs::msg::PoseStamped lift_pose = grasp_pose;
     lift_pose.pose.position.z += 0.15;
     std::vector<geometry_msgs::msg::Pose> up_waypoints;
     up_waypoints.push_back(lift_pose.pose);
     
     moveit_msgs::msg::RobotTrajectory up_trajectory;
-    double lift_fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, 0.0, up_trajectory);
+    double lift_fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, up_trajectory);
     
     if (lift_fraction >= 0.9) {
       move_group_arm_->execute(up_trajectory);
     } else {
       RCLCPP_WARN(this->get_logger(), "Cartesian lift failed, using free space planning...");
+      sanitize_start_state();
       move_group_arm_->setPoseTarget(lift_pose);
       move_group_arm_->move();
     }
@@ -215,6 +241,7 @@ private:
 
     // 1. Move directly to place pose using free space planning
     RCLCPP_INFO(this->get_logger(), "Planning path to place pose...");
+    sanitize_start_state();
     move_group_arm_->setPoseTarget(place_pose);
     
     moveit::planning_interface::MoveGroupInterface::Plan my_plan;
@@ -239,6 +266,7 @@ private:
 
     // 3. Move up (Cartesian lift)
     RCLCPP_INFO(this->get_logger(), "Lifting after place...");
+    sanitize_start_state();
     geometry_msgs::msg::PoseStamped above_pose = place_pose;
     above_pose.pose.position.z += 0.15;
     
@@ -246,11 +274,12 @@ private:
     up_waypoints.push_back(above_pose.pose);
     
     moveit_msgs::msg::RobotTrajectory up_trajectory;
-    double fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, 0.0, up_trajectory);
+    double fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, up_trajectory);
     
     if (fraction >= 0.9) {
       move_group_arm_->execute(up_trajectory);
     } else {
+      sanitize_start_state();
       move_group_arm_->setPoseTarget(above_pose);
       move_group_arm_->move();
     }
