@@ -12,9 +12,12 @@
   <!-- Launch file dependencies -->
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
 
   <!-- Nav2 stack -->
   <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_common</exec_depend>
   <exec_depend>nav2_bt_navigator</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
@@ -28,7 +31,8 @@
   <exec_depend>bt_text_interface</exec_depend>
   <exec_depend>vision_services</exec_depend>
   <exec_depend>manipulator_control</exec_depend>
-  <exec_depend>turtlebot3_manipulation_description</exec_depend>
+  <exec_depend>tiago_gazebo</exec_depend>
+  <exec_depend>tiago_2dnav</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

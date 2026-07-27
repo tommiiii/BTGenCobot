@@ -41,6 +41,9 @@ Thumbs.db
 logs/
 *.log
 
+# Secrets
+inference_server/.env
+
 # Gazebo
 .gazebo/
 

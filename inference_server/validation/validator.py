@@ -26,6 +26,16 @@ ACTION_NODES = [
 
 ALL_VALID_NODES = CONTROL_NODES + DECORATOR_NODES + CONDITION_NODES + ACTION_NODES
 
+SUPPORTED_COMMAND_PATTERNS = (
+    "pick up", "pick", "grab", "grasp", "take",
+    "place", "put", "set down", "deposit",
+    "navigate", "go to", "move to", "travel to", "head to", "return to",
+    "move forward", "go forward", "drive",
+    "spin", "rotate", "turn left", "turn right",
+    "detect", "find", "look for", "search",
+    "wait", "back up", "back away",
+)
+
 
 def get_all_node_types():
     """Get list of all valid BT node types"""
@@ -35,6 +45,18 @@ def get_all_node_types():
 class BTValidationError(Exception):
     """Custom exception for BT validation errors"""
     pass
+
+
+def validate_supported_command(command: str) -> Tuple[bool, Optional[str]]:
+    """Check that a generic request contains at least one supported robot intent."""
+    normalized = " ".join(command.strip().lower().split())
+    if not normalized:
+        return False, "Command is empty"
+
+    if any(pattern in normalized for pattern in SUPPORTED_COMMAND_PATTERNS):
+        return True, None
+
+    return False, "Command does not describe a supported robot task"
 
 
 def validate_bt_xml(xml_string: str, strict: bool = False) -> Tuple[bool, Optional[str]]:
@@ -294,6 +316,60 @@ def validate_semantic_structure(xml_string: str) -> Tuple[bool, list]:
         
     except Exception as e:
         return True, [f"Error checking semantics: {str(e)}"]
+
+
+def validate_command_semantics(xml_string: str, command: str) -> Tuple[bool, list]:
+    """
+    Validate high-level BT semantics against the original natural language command.
+    This catches simple-command degeneracies such as duplicated PlaceObject or
+    duplicated DetectObject nodes.
+    """
+    issues = []
+    cmd = command.lower()
+
+    command_supported, command_error = validate_supported_command(command)
+    if not command_supported:
+        return False, [command_error or "Unsupported robot command"]
+
+    is_place_only = (
+        any(token in cmd for token in ["place", "put", "set down", "deposit"]) and
+        not any(token in cmd for token in ["pick up", "pick", "grab", "grasp", "take"])
+    )
+    is_detect_only = (
+        any(token in cmd for token in ["detect", "find", "look for", "search"]) and
+        not any(token in cmd for token in ["place", "put", "set down", "deposit", "pick up", "pick", "grab", "grasp", "take"])
+    )
+
+    if not (is_place_only or is_detect_only):
+        return True, issues
+
+    try:
+        root = ET.fromstring(xml_string)
+
+        action_ids = []
+        for elem in root.iter():
+            if elem.tag == "Action":
+                node_id = elem.get("ID")
+                if node_id:
+                    action_ids.append(node_id)
+
+        if is_place_only:
+            place_count = sum(1 for node_id in action_ids if node_id == "PlaceObject")
+            if place_count == 0:
+                issues.append("Pure place command generated no PlaceObject node")
+            elif place_count > 1:
+                issues.append(f"Pure place command generated {place_count} PlaceObject nodes")
+
+        if is_detect_only:
+            detect_count = sum(1 for node_id in action_ids if node_id == "DetectObject")
+            if detect_count == 0:
+                issues.append("Pure detect command generated no DetectObject node")
+            elif detect_count > 1:
+                issues.append(f"Pure detect command generated {detect_count} DetectObject nodes")
+
+        return len(issues) == 0, issues
+    except Exception as e:
+        return False, [f"Error checking command semantics: {str(e)}"]
 
 
 def validate_blackboard_variables(xml_string: str) -> Tuple[bool, list]:

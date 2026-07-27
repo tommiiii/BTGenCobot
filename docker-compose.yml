@@ -1,6 +1,7 @@
 services:
   # All-in-one ROS2 workspace with Gazebo, Nav2, and ML dependencies
   btgencobot:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
@@ -16,15 +17,20 @@ services:
       - ./robot_description:/workspace/robot_description:cached
       - ./worlds:/workspace/worlds:cached
       - ./models:/workspace/models:cached # Mount models as volume instead of copying
+      - ./maps:/workspace/maps:cached # Saved maps for environment-aware bringup
       - ./scripts:/workspace/scripts:cached
       # ROS2 build artifacts (use delegated for better performance)
       - ./install:/workspace/install:delegated
       - ./build:/workspace/build:delegated
       - ./log:/workspace/log:delegated
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Lets the container reach the host inference server
     environment:
       - ROS_DOMAIN_ID=42
       - DISPLAY=:1
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - RMW_FASTRTPS_USE_SHM=0 # Avoid shared-memory issues under Docker on macOS
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4 # Stable inter-process transport in containers
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     stdin_open: true
     tty: true
