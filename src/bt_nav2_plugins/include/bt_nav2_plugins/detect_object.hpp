@@ -19,14 +19,11 @@ namespace bt_nav2_plugins
 {
 
 /**
- * @brief BT node to detect objects using Florence2 (via ROS2 service)
+ * @brief BT node to detect objects using GroundingDINO (via ROS2 service)
  *
- * This node uses Florence2 for open-vocabulary object detection.
- * It calls a ROS2 service provided by the florence2_service node.
- * 
- * This node is used for initial detection to get an approach pose for navigation.
- * The actual object pose for manipulation is computed by PickObject/PlaceObject
- * which perform close-range detection for better accuracy.
+ * Performs initial detection to get a navigation approach pose.
+ * Also stores the raw object 3D pose on the blackboard for PickObject/PlaceObject
+ * to use directly (skipping a second, error-prone close-range detection).
  *
  * Input Ports:
  *   object_description - Description of object to find (e.g., "red cup", "table")
@@ -34,6 +31,7 @@ namespace bt_nav2_plugins
  *
  * Output Ports:
  *   target_pose - Navigation approach pose (near object, facing it)
+ *   object_pose - Raw 3D object position in map frame (for direct use by Pick/Place)
  *   detected - Boolean indicating if object was found
  *   confidence - Detection confidence score (0-1)
  */
@@ -52,6 +50,7 @@ public:
       BT::InputPort<std::string>("object_description", "Description of object to detect"),
       BT::InputPort<double>("box_threshold", 0.35, "Detection confidence threshold (0-1)"),
       BT::OutputPort<geometry_msgs::msg::PoseStamped>("target_pose", "Approach pose for navigation"),
+      BT::OutputPort<geometry_msgs::msg::PoseStamped>("object_pose", "Raw object 3D pose in map frame"),
       BT::OutputPort<bool>("detected", "Whether object was detected"),
       BT::OutputPort<double>("confidence", "Detection confidence score")
     };
@@ -105,7 +104,10 @@ private:
   bool response_received_;
   double box_threshold_;
   btgencobot_interfaces::srv::DetectObject::Response::SharedPtr detection_response_;
-  rclcpp::Time detection_start_time_;  // Time when detection started (to filter stale images)
+  rclcpp::Time detection_start_time_;
+
+  // Raw object pose (before approach offset) stored on blackboard for Pick/Place
+  geometry_msgs::msg::PoseStamped raw_object_pose_;
 };
 
 }  // namespace bt_nav2_plugins

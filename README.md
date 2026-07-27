@@ -20,11 +20,8 @@ docker-compose up --build
 colcon build --symlink-install
 source install/setup.bash
 
-# Start simulation
-ros2 launch turtlebot3_manipulation_description gazebo.launch.py
-
-# Start Nav2
-ros2 launch bt_bringup nav2_bringup.launch.py
+# Start simulation, Nav2, Vision, and Foxglove all at once
+ros2 launch bt_bringup robot_bt_bringup.launch.py
 
 # Start inference server (on host or in container)
 cd inference_server && uv run serve
@@ -79,17 +76,17 @@ BTGenCobot/
 │   ├── bt_nav2_plugins/        # Custom Nav2 BT nodes (DetectObject, Pick, Place, Spin)
 │   ├── bt_bringup/             # Launch files and Nav2 config
 │   ├── manipulator_control/    # Arm IK and control service
-│   ├── vision_services/        # Florence-2 object detection
+│   ├── vision_services/        # GroundingDINO object detection
 │   └── btgencobot_interfaces/  # Custom ROS2 messages/services
 │
-└── robot_description/          # TurtleBot3 + OpenManipulator-X URDF
+└── tiago_harmonic/             # TIAGo robot dependencies
 ```
 
 ## Custom BT Nodes
 
 | Node | Description |
 |------|-------------|
-| `DetectObject` | Open-vocabulary object detection via Florence-2 |
+| `DetectObject` | Open-vocabulary object detection via GroundingDINO |
 | `PickObject` | Approach and grasp detected object |
 | `PlaceObject` | Place held object at detected location |
 | `SpinLeft/SpinRight` | Rotate in place |

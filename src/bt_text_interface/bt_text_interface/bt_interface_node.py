@@ -25,6 +25,14 @@ NAV_STATUS_NAMES = {
     4: 'SUCCEEDED', 5: 'CANCELED', 6: 'ABORTED'
 }
 
+WAYPOINTS = {
+    "kitchen": "0;map;6.5;0.9;0.0;0.0;0.0;0.0;1.0",
+    "bedroom": "0;map;-6.1;2.0;0.0;0.0;0.0;0.0;1.0",
+    "livingroom": "0;map;1.5;-1.7;0.0;0.0;0.0;0.0;1.0",
+    "living room": "0;map;1.5;-1.7;0.0;0.0;0.0;0.0;1.0",
+    "bathroom": "0;map;-2.4;1.8;0.0;0.0;0.0;0.0;1.0",
+    "door": "0;map;6.0;-5.5;0.0;0.0;0.0;0.0;1.0"
+}
 
 class BTInterfaceNode(Node):
     """ROS2 Action Server for generating BehaviorTrees from natural language and executing them via Nav2"""
@@ -159,6 +167,10 @@ class BTInterfaceNode(Node):
             self.get_logger().info('BT validation successful')
 
             self.publish_feedback(goal_handle, 'validating', 0.4, 'Writing BT to file...')
+            
+            # Resolve semantic waypoints
+            bt_xml = self.resolve_semantic_waypoints(bt_xml)
+            
             bt_file_path = self.write_bt_file(bt_xml)
             result.bt_xml_path = str(bt_file_path)
             self.get_logger().info(f'BT written to: {bt_file_path}')
@@ -264,6 +276,23 @@ class BTInterfaceNode(Node):
             return False, f'XML parse error: {str(e)}'
         except Exception as e:
             return False, f'Validation error: {str(e)}'
+
+    def resolve_semantic_waypoints(self, xml_string: str) -> str:
+        """Replace semantic goals with coordinate strings."""
+        try:
+            root = ET.fromstring(xml_string)
+            for action in root.findall(".//Action"):
+                if action.get("ID") == "NavigateToPose" or action.get("ID") == "ComputePathToPose":
+                    goal = action.get("goal")
+                    if goal and not ";" in goal and not "," in goal:
+                        # Probably a semantic name
+                        goal_lower = goal.lower().strip()
+                        if goal_lower in WAYPOINTS:
+                            self.get_logger().info(f"Resolved waypoint '{goal}' to '{WAYPOINTS[goal_lower]}'")
+                            action.set("goal", WAYPOINTS[goal_lower])
+            return ET.tostring(root, encoding='unicode', xml_declaration=True)
+        except ET.ParseError:
+            return xml_string
 
     def add_uids_for_foxglove(self, xml_string: str) -> str:
         """Add unique _uid attributes to all nodes for Foxglove Polymath BT panel visualization.

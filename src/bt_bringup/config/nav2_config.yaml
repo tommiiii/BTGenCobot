@@ -36,8 +36,8 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.20
-      yaw_goal_tolerance: 0.25
+      xy_goal_tolerance: 0.40
+      yaw_goal_tolerance: 3.14
 
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
@@ -63,7 +63,7 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.20
+      xy_goal_tolerance: 0.40
       trans_stopped_velocity: 0.25
       short_circuit_trajectory_evaluation: True
       stateful: True
@@ -91,7 +91,7 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.14
+      robot_radius: 0.10
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -108,7 +108,7 @@ local_costmap:
         mark_threshold: 0
         observation_sources: scan
         scan:
-          topic: /scan
+          topic: /scan_raw
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -122,10 +122,12 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: True
-      robot_radius: 0.14
+      robot_radius: 0.10
       resolution: 0.05
       track_unknown_space: true
-      rolling_window: false
+      rolling_window: true
+      width: 20
+      height: 20
       always_send_full_costmap: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -133,14 +135,17 @@ global_costmap:
         enabled: True
         observation_sources: scan
         scan:
-          topic: /scan
+          topic: /scan_raw
           max_obstacle_height: 2.0
           clearing: True
           marking: True
           data_type: "LaserScan"
+          raytrace_range: 4.0
+          obstacle_range: 3.5
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
+        subscribe_to_updates: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
@@ -219,7 +224,7 @@ collision_monitor:
     polygons: ["PolygonStop"]
     PolygonStop:
       type: "circle"
-      radius: 0.15
+      radius: 0.28
       action_type: "stop"
       min_points: 4
       visualize: True
@@ -227,7 +232,7 @@ collision_monitor:
     observation_sources: ["scan"]
     scan:
       type: "scan"
-      topic: "/scan"
+      topic: "/scan_raw"
       min_height: 0.05
       max_height: 2.0
       enabled: True

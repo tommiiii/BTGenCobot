@@ -16,7 +16,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     # Get package directories
-    pkg_tb3_manipulation = get_package_share_directory('turtlebot3_manipulation_description')
+
     pkg_bt_bringup = get_package_share_directory('bt_bringup')
 
     # Launch configuration variables
@@ -35,8 +35,8 @@ def generate_launch_description():
 
     declare_world_cmd = DeclareLaunchArgument(
         'world',
-        default_value='/workspace/worlds/indoor_world.sdf',
-        description='Full path to world file to load'
+        default_value='house_pick_and_place',
+        description='Full path to world file to load, or name of a br2_gazebo_world'
     )
 
     declare_slam_mode_cmd = DeclareLaunchArgument(
@@ -57,16 +57,22 @@ def generate_launch_description():
         description='Directory to save generated BehaviorTrees'
     )
 
-    # Launch Gazebo with robot (use_rviz=true to start RViz, headless=false for GUI)
+    # Launch Gazebo with TIAGo robot
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(pkg_tb3_manipulation, 'launch', 'gazebo.launch.py')
+            os.path.join(get_package_share_directory('tiago_gazebo'), 'launch', 'tiago_gazebo.launch.py')
         ),
         launch_arguments={
             'use_sim_time': use_sim_time,
-            'use_rviz': 'true',
-            'world': world,
-            'headless': 'false'
+            'is_public_sim': 'True',
+            'world_name': world,
+            'arm_type': 'tiago-arm',
+            'end_effector': 'pal-gripper',
+            'ft_sensor': 'schunk-ft',
+            'camera_model': 'orbbec-astra',
+            'laser_model': 'sick-571',
+            'base_type': 'pmb2',
+            'moveit': 'True'
         }.items()
     )
 
@@ -106,16 +112,16 @@ def generate_launch_description():
         emulate_tty=True
     )
 
-    # Launch Florence-2 Object Detection Service
-    # Uses Florence-2 for text-prompted object detection
-    florence2_service = Node(
+    # Launch GroundingDINO Object Detection Service
+    # Uses GroundingDINO-Tiny for text-prompted open-vocabulary object detection
+    grounding_dino_service = Node(
         package='vision_services',
-        executable='florence2_service',
-        name='florence2_service',
+        executable='grounding_dino_service',
+        name='grounding_dino_service',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'use_mock': False,  # Use real models
-            'florence2_model': 'microsoft/Florence-2-base',
+            'use_mock': False,
+            'model_name': 'IDEA-Research/grounding-dino-tiny',
             'device': 'auto',
             'publish_debug_images': True,
         }],
@@ -156,6 +162,16 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Launch RViz2
+    rviz2_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        parameters=[{'use_sim_time': use_sim_time}],
+        arguments=['-d', os.path.join(get_package_share_directory('tiago_2dnav'), 'config', 'rviz', 'navigation.rviz')],
+        output='screen'
+    )
+
     # Create launch description
     ld = LaunchDescription()
 
@@ -174,13 +190,16 @@ def generate_launch_description():
     # Add BT Interface Node (main action server)
     ld.add_action(bt_interface_node)
 
-    # Add Florence-2 Service (object detection)
-    ld.add_action(florence2_service)
+    # Add GroundingDINO Service (object detection)
+    ld.add_action(grounding_dino_service)
 
     # Add Manipulator Control Service (pick/place operations)
     ld.add_action(manipulator_service)
 
     # Add Foxglove Bridge
     ld.add_action(foxglove_bridge)
+
+    # Add RViz2
+    ld.add_action(rviz2_node)
 
     return ld

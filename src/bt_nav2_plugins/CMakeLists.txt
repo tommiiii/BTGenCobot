@@ -11,8 +11,11 @@ find_package(behaviortree_cpp REQUIRED)
 find_package(nav2_behavior_tree REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
+find_package(control_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
@@ -40,8 +43,11 @@ ament_target_dependencies(bt_nav2_plugins
   nav2_behavior_tree
   nav2_msgs
   rclcpp
+  rclcpp_action
   sensor_msgs
   geometry_msgs
+  trajectory_msgs
+  control_msgs
   tf2_ros
   tf2_geometry_msgs
   cv_bridge
@@ -79,8 +85,11 @@ ament_export_dependencies(
   nav2_behavior_tree
   nav2_msgs
   rclcpp
+  rclcpp_action
   sensor_msgs
   geometry_msgs
+  trajectory_msgs
+  control_msgs
   tf2_ros
   tf2_geometry_msgs
   cv_bridge

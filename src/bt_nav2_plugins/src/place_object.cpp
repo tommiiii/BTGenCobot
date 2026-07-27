@@ -23,54 +23,44 @@ PlaceObject::PlaceObject(
   place_sent_(false),
   place_received_(false)
 {
-  // Get ROS node from config (Nav2's node - used for logging)
   if (!config.blackboard->get("node", node_) || !node_) {
     throw BT::RuntimeError("PlaceObject: 'node' not found in blackboard");
   }
 
-  // Create a separate node for service calls and subscriptions
   service_node_ = std::make_shared<rclcpp::Node>("place_object_service_node");
 
-  // Initialize TF2
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-  // Create service clients
   detect_client_ = service_node_->create_client<btgencobot_interfaces::srv::DetectObject>(
     "/detect_object");
   manipulator_client_ = service_node_->create_client<btgencobot_interfaces::srv::ManipulatorAction>(
     "/manipulator_action");
 
-  // Use sensor data QoS for camera topics
-  auto sensor_qos = rclcpp::SensorDataQoS();
+  auto camera_qos = rclcpp::QoS(10).reliability(rclcpp::ReliabilityPolicy::Reliable);
 
-  // Subscribe to camera topics
   image_sub_ = service_node_->create_subscription<sensor_msgs::msg::Image>(
-    "/camera",
-    sensor_qos,
+    "/head_front_camera/image",
+    camera_qos,
     std::bind(&PlaceObject::imageCallback, this, std::placeholders::_1));
 
   depth_sub_ = service_node_->create_subscription<sensor_msgs::msg::Image>(
-    "/camera/depth",
-    sensor_qos,
+    "/head_front_camera/depth_image",
+    camera_qos,
     std::bind(&PlaceObject::depthCallback, this, std::placeholders::_1));
 
   camera_info_sub_ = service_node_->create_subscription<sensor_msgs::msg::CameraInfo>(
-    "/camera/camera_info",
-    sensor_qos,
+    "/head_front_camera/camera_info",
+    camera_qos,
     std::bind(&PlaceObject::cameraInfoCallback, this, std::placeholders::_1));
 
-  // Publisher for direct motion control (final approach bypassing Nav2 costmap)
-  cmd_vel_pub_ = service_node_->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
-
-  RCLCPP_INFO(node_->get_logger(), "PlaceObject BT node initialized with integrated detection and final approach");
+  RCLCPP_INFO(node_->get_logger(), "PlaceObject BT node initialized");
 }
 
 BT::NodeStatus PlaceObject::onStart()
 {
   RCLCPP_INFO(node_->get_logger(), "PlaceObject: Starting place operation with close-range detection");
 
-  // Get input ports
   if (!getInput<std::string>("place_description", place_description_)) {
     RCLCPP_ERROR(node_->get_logger(), "PlaceObject: Missing required input 'place_description'");
     return BT::NodeStatus::FAILURE;
@@ -86,7 +76,6 @@ BT::NodeStatus PlaceObject::onStart()
     place_description_.c_str(),
     box_threshold_);
 
-  // Reset state
   state_ = PlaceState::WAITING_FOR_IMAGE;
   detection_sent_ = false;
   detection_received_ = false;
@@ -97,8 +86,6 @@ BT::NodeStatus PlaceObject::onStart()
   latest_image_.reset();
   latest_depth_.reset();
   has_camera_info_ = false;
-  detected_depth_ = 0.0f;
-  approach_done_ = false;
 
   operation_start_time_ = node_->now();
 
@@ -107,13 +94,11 @@ BT::NodeStatus PlaceObject::onStart()
 
 BT::NodeStatus PlaceObject::onRunning()
 {
-  // Spin our node to process callbacks
   rclcpp::spin_some(service_node_);
 
   switch (state_) {
     case PlaceState::WAITING_FOR_IMAGE:
     {
-      // Wait for fresh image
       if (!latest_image_) {
         RCLCPP_WARN_THROTTLE(
           node_->get_logger(),
@@ -123,7 +108,6 @@ BT::NodeStatus PlaceObject::onRunning()
         return BT::NodeStatus::RUNNING;
       }
 
-      // Check if image is fresh
       rclcpp::Time image_time(latest_image_->header.stamp);
       if (image_time < operation_start_time_) {
         RCLCPP_INFO_THROTTLE(
@@ -136,15 +120,14 @@ BT::NodeStatus PlaceObject::onRunning()
         return BT::NodeStatus::RUNNING;
       }
 
-      // Use default camera info if not received
       if (!has_camera_info_) {
         RCLCPP_WARN_ONCE(
           node_->get_logger(),
           "PlaceObject: No camera_info received, using defaults");
-        fx_ = 554.3;
-        fy_ = 554.3;
-        cx_ = 320.5;
-        cy_ = 240.5;
+        fx_ = 522.19;
+        fy_ = 522.19;
+        cx_ = 320.0;
+        cy_ = 240.0;
       }
 
       state_ = PlaceState::DETECTING;
@@ -154,7 +137,6 @@ BT::NodeStatus PlaceObject::onRunning()
 
     case PlaceState::DETECTING:
     {
-      // Send detection request if not sent
       if (!detection_sent_) {
         if (!detect_client_->wait_for_service(0s)) {
           RCLCPP_WARN_THROTTLE(
@@ -187,7 +169,6 @@ BT::NodeStatus PlaceObject::onRunning()
         return BT::NodeStatus::RUNNING;
       }
 
-      // Wait for detection response
       if (!detection_received_) {
         RCLCPP_INFO_THROTTLE(
           node_->get_logger(),
@@ -197,7 +178,6 @@ BT::NodeStatus PlaceObject::onRunning()
         return BT::NodeStatus::RUNNING;
       }
 
-      // Process detection result
       if (!detection_response_ || !detection_response_->detected) {
         RCLCPP_ERROR(
           node_->get_logger(),
@@ -212,9 +192,7 @@ BT::NodeStatus PlaceObject::onRunning()
         detection_response_->phrase.c_str(),
         detection_response_->confidence);
 
-      // Compute depth for place location
-      // For placing, we want to find the TOP surface of the detected object (table, box, etc.)
-      float depth = 0.3f;  // Default close-range depth
+      float depth = 0.3f;
       float place_center_x = detection_response_->center_x;
       float place_center_y = detection_response_->center_y;
 
@@ -242,11 +220,9 @@ BT::NodeStatus PlaceObject::onRunning()
             x2 = std::max(0, std::min(x2, depth_ptr->image.cols - 1));
             y2 = std::max(0, std::min(y2, depth_ptr->image.rows - 1));
 
-            // For place location (surface), sample from the top portion of bbox
-            // This helps find the top surface for placing
             int height = y2 - y1;
-            int top_region_y2 = y1 + height / 3;  // Top third of bbox
-            
+            int top_region_y2 = y1 + height / 3;
+
             int margin_x = (x2 - x1) * 0.15;
             int inner_x1 = x1 + margin_x;
             int inner_x2 = x2 - margin_x;
@@ -268,15 +244,12 @@ BT::NodeStatus PlaceObject::onRunning()
           }
 
           if (!depth_samples.empty()) {
-            // For placing, use the closest (surface) depth
             std::sort(depth_samples.begin(), depth_samples.end(),
               [](const DepthSample& a, const DepthSample& b) { return a.depth < b.depth; });
 
-            // Use median of front samples for robust surface depth
             size_t front_count = std::min(depth_samples.size(), static_cast<size_t>(depth_samples.size() / 3 + 1));
             depth = depth_samples[front_count / 2].depth;
 
-            // Use center of top region for place position
             double sum_x = 0.0, sum_y = 0.0;
             for (size_t i = 0; i < front_count; ++i) {
               sum_x += depth_samples[i].x;
@@ -295,106 +268,23 @@ BT::NodeStatus PlaceObject::onRunning()
         }
       }
 
-      // Compute place pose - slightly above the detected surface
-      place_pose_ = computePlacePose(place_center_x, place_center_y, depth, "camera_rgb_optical_frame");
-
-      // Save depth for approach calculation
-      detected_depth_ = depth;
-
-      // Check if we need to approach closer (only if we haven't already approached)
-      if (!approach_done_ && detected_depth_ > MIN_APPROACH_DISTANCE) {
-        state_ = PlaceState::APPROACHING;
-        approach_start_time_ = node_->now();
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "PlaceObject: Place location at %.2fm, starting final approach to get within %.2fm",
-          detected_depth_, MIN_APPROACH_DISTANCE);
-      } else {
-        state_ = PlaceState::PLACING;
-        if (approach_done_) {
-          RCLCPP_INFO(node_->get_logger(), "PlaceObject: Approach already done, proceeding with place (depth: %.2fm)", detected_depth_);
-        } else {
-          RCLCPP_INFO(node_->get_logger(), "PlaceObject: Already close enough (%.2fm), starting place...", detected_depth_);
-        }
-      }
-      return BT::NodeStatus::RUNNING;
-    }
-
-    case PlaceState::APPROACHING:
-    {
-      // Final approach: drive forward until robot is close enough to the place location
-      // Use TF to get current robot position and calculate distance to target
-
-      double elapsed = (node_->now() - approach_start_time_).seconds();
-
-      // Safety timeout
-      const double MAX_APPROACH_TIME = 15.0;
-      if (elapsed > MAX_APPROACH_TIME) {
-        geometry_msgs::msg::Twist stop_msg;
-        cmd_vel_pub_->publish(stop_msg);
-
-        RCLCPP_WARN(
-          node_->get_logger(),
-          "PlaceObject: Approach timeout after %.1fs, proceeding with place anyway",
-          elapsed);
-        state_ = PlaceState::PLACING;
-        return BT::NodeStatus::RUNNING;
+      std::string camera_frame = latest_image_->header.frame_id;
+      if (camera_frame.empty()) {
+        camera_frame = "head_front_camera_depth_optical_frame";
       }
 
-      // Get current robot position in map frame
-      geometry_msgs::msg::TransformStamped robot_transform;
-      try {
-        robot_transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
-      } catch (const tf2::TransformException & ex) {
-        RCLCPP_WARN_THROTTLE(
-          node_->get_logger(),
-          *node_->get_clock(),
-          1000,
-          "PlaceObject: Could not get robot position: %s", ex.what());
-        // Keep moving if we can't get position
-        geometry_msgs::msg::Twist cmd_vel;
-        cmd_vel.linear.x = APPROACH_VELOCITY;
-        cmd_vel_pub_->publish(cmd_vel);
-        return BT::NodeStatus::RUNNING;
-      }
+      place_pose_ = computePlacePose(place_center_x, place_center_y, depth, camera_frame);
 
-      // Calculate distance from robot to place location (in 2D)
-      double dx = place_pose_.pose.position.x - robot_transform.transform.translation.x;
-      double dy = place_pose_.pose.position.y - robot_transform.transform.translation.y;
-      double distance_to_target = std::sqrt(dx * dx + dy * dy);
-
-      RCLCPP_INFO_THROTTLE(
+      state_ = PlaceState::PLACING;
+      RCLCPP_INFO(
         node_->get_logger(),
-        *node_->get_clock(),
-        500,
-        "PlaceObject: Approaching... distance to target: %.3fm, target: %.2fm",
-        distance_to_target, MIN_APPROACH_DISTANCE);
-
-      // Check if we're close enough
-      if (distance_to_target <= MIN_APPROACH_DISTANCE) {
-        geometry_msgs::msg::Twist stop_msg;
-        cmd_vel_pub_->publish(stop_msg);
-
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "PlaceObject: Approach complete, distance to target: %.3fm",
-          distance_to_target);
-
-        state_ = PlaceState::PLACING;
-        return BT::NodeStatus::RUNNING;
-      }
-
-      // Still need to move closer
-      geometry_msgs::msg::Twist cmd_vel;
-      cmd_vel.linear.x = APPROACH_VELOCITY;
-      cmd_vel_pub_->publish(cmd_vel);
-
+        "PlaceObject: Place location at %.2fm, proceeding directly to place (TIAGo arm reach ~0.8m)",
+        depth);
       return BT::NodeStatus::RUNNING;
     }
 
     case PlaceState::PLACING:
     {
-      // Send place request if not sent
       if (!place_sent_) {
         if (!manipulator_client_->wait_for_service(0s)) {
           RCLCPP_WARN_THROTTLE(
@@ -431,7 +321,6 @@ BT::NodeStatus PlaceObject::onRunning()
         return BT::NodeStatus::RUNNING;
       }
 
-      // Wait for place response
       if (!place_received_) {
         RCLCPP_INFO_THROTTLE(
           node_->get_logger(),
@@ -441,7 +330,6 @@ BT::NodeStatus PlaceObject::onRunning()
         return BT::NodeStatus::RUNNING;
       }
 
-      // Check place result
       if (!place_response_) {
         RCLCPP_ERROR(node_->get_logger(), "PlaceObject: Place service returned null response");
         return BT::NodeStatus::FAILURE;
@@ -470,12 +358,6 @@ BT::NodeStatus PlaceObject::onRunning()
 void PlaceObject::onHalted()
 {
   RCLCPP_INFO(node_->get_logger(), "PlaceObject: Halted");
-
-  // Stop the robot if we were approaching
-  if (state_ == PlaceState::APPROACHING) {
-    geometry_msgs::msg::Twist stop_msg;
-    cmd_vel_pub_->publish(stop_msg);
-  }
 
   state_ = PlaceState::WAITING_FOR_IMAGE;
   detection_sent_ = false;
@@ -518,12 +400,10 @@ geometry_msgs::msg::PoseStamped PlaceObject::computePlacePose(
   float depth_value,
   const std::string & frame_id)
 {
-  // Pinhole camera model: pixel to 3D point
   double x = (center_x - cx_) * depth_value / fx_;
   double y = (center_y - cy_) * depth_value / fy_;
   double z = depth_value;
 
-  // Create pose in camera optical frame
   geometry_msgs::msg::PoseStamped pose_camera;
   pose_camera.header.frame_id = frame_id;
   pose_camera.header.stamp = node_->now();
@@ -537,15 +417,13 @@ geometry_msgs::msg::PoseStamped PlaceObject::computePlacePose(
     "PlaceObject: Place location in camera frame: (%.3f, %.3f, %.3f)",
     x, y, z);
 
-  // Transform to map frame
   try {
     geometry_msgs::msg::PoseStamped pose_map = tf_buffer_->transform(
       pose_camera,
       "map",
       tf2::durationFromSec(1.0));
 
-    // For placing, add a small height offset above the surface
-    const double place_height_offset = 0.05;  // 5cm above detected surface
+    const double place_height_offset = 0.05;
     pose_map.pose.position.z += place_height_offset;
 
     RCLCPP_INFO(
@@ -556,14 +434,13 @@ geometry_msgs::msg::PoseStamped PlaceObject::computePlacePose(
       pose_map.pose.position.z,
       place_height_offset);
 
-    // Set orientation to face robot (for placing)
     geometry_msgs::msg::TransformStamped robot_transform;
     try {
       robot_transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
       double dx = pose_map.pose.position.x - robot_transform.transform.translation.x;
       double dy = pose_map.pose.position.y - robot_transform.transform.translation.y;
       double yaw = std::atan2(dy, dx);
-      
+
       tf2::Quaternion q;
       q.setRPY(0, 0, yaw);
       pose_map.pose.orientation.x = q.x();
