@@ -140,6 +140,17 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Frontend compatibility relays: /head_front_camera/image -> /camera,
+    # /scan_raw -> /scan, /head_front_camera/camera_info -> /camera_info so the
+    # companion web frontend works unchanged on the TIAGo stack.
+    frontend_relay = Node(
+        package='bt_bringup',
+        executable='frontend_relay.py',
+        name='frontend_relay',
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='screen',
+    )
+
 
     # Launch Foxglove Bridge with client publish capability
     foxglove_bridge = Node(
@@ -195,6 +206,9 @@ def generate_launch_description():
 
     # Add Manipulator Control Service (pick/place operations)
     ld.add_action(manipulator_service)
+
+    # Add Frontend Relay (sensor topic contract for the companion web frontend)
+    ld.add_action(frontend_relay)
 
     # Add Foxglove Bridge
     ld.add_action(foxglove_bridge)

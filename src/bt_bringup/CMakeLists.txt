@@ -17,6 +17,7 @@ install(DIRECTORY
 
 install(PROGRAMS
   scripts/environment_publisher.py
+  scripts/frontend_relay.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -303,6 +303,16 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Frontend compatibility relays: /head_front_camera/image -> /camera,
+    # /scan_raw -> /scan, /head_front_camera/camera_info -> /camera_info.
+    frontend_relay = Node(
+        package='bt_bringup',
+        executable='frontend_relay.py',
+        name='frontend_relay',
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='screen',
+    )
+
     # Create launch description
     ld = LaunchDescription()
 
@@ -324,6 +334,7 @@ def generate_launch_description():
         args=[profiles_file],
     ))
     ld.add_action(environment_publisher)
+    ld.add_action(frontend_relay)
     ld.add_action(gazebo_launch)
 
     # Add Map Server and AMCL (instead of SLAM)

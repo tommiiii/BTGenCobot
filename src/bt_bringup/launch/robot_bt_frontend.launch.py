@@ -124,6 +124,18 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Frontend compatibility relays: /head_front_camera/image -> /camera,
+    # /scan_raw -> /scan, /head_front_camera/camera_info -> /camera_info so the
+    # companion web frontend (built against the TurtleBot3 topic contract) works
+    # unchanged on the TIAGo stack.
+    frontend_relay = Node(
+        package='bt_bringup',
+        executable='frontend_relay.py',
+        name='frontend_relay',
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='screen',
+    )
+
     # SLAM Toolbox starts after Gazebo sensor bridges come up.
     slam_launch = TimerAction(
         period=8.0,
@@ -262,6 +274,7 @@ def generate_launch_description():
     ))
 
     ld.add_action(environment_publisher)
+    ld.add_action(frontend_relay)
     ld.add_action(gazebo_launch)
     ld.add_action(slam_launch)
     ld.add_action(nav2_launch)
