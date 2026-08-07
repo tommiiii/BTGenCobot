@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'grounding_dino_service = vision_services.grounding_dino_service:main',
+            'semantic_segmentation = vision_services.semantic_segmentation_node:main',
         ],
     },
 )

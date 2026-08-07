@@ -22,6 +22,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Image, LaserScan, CameraInfo
+from rclpy.qos import qos_profile_sensor_data
 
 
 class FrontendRelayNode(Node):
@@ -29,21 +30,21 @@ class FrontendRelayNode(Node):
         super().__init__('frontend_relay')
 
         # Image: /head_front_camera/image -> /camera
-        self._image_pub = self.create_publisher(Image, '/camera', 10)
+        self._image_pub = self.create_publisher(Image, '/camera', qos_profile_sensor_data)
         self._image_sub = self.create_subscription(
-            Image, '/head_front_camera/image', self._image_cb, 10
+            Image, '/head_front_camera/image', self._image_cb, qos_profile_sensor_data
         )
 
         # CameraInfo: /head_front_camera/camera_info -> /camera_info
-        self._cinfo_pub = self.create_publisher(CameraInfo, '/camera_info', 10)
+        self._cinfo_pub = self.create_publisher(CameraInfo, '/camera_info', qos_profile_sensor_data)
         self._cinfo_sub = self.create_subscription(
-            CameraInfo, '/head_front_camera/camera_info', self._cinfo_cb, 10
+            CameraInfo, '/head_front_camera/camera_info', self._cinfo_cb, qos_profile_sensor_data
         )
 
         # LaserScan: /scan_raw -> /scan
-        self._scan_pub = self.create_publisher(LaserScan, '/scan', 10)
+        self._scan_pub = self.create_publisher(LaserScan, '/scan', qos_profile_sensor_data)
         self._scan_sub = self.create_subscription(
-            LaserScan, '/scan_raw', self._scan_cb, 10
+            LaserScan, '/scan_raw', self._scan_cb, qos_profile_sensor_data
         )
 
         self.get_logger().info(

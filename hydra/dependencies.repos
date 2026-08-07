@@ -1,0 +1,45 @@
+repositories:
+  config_utilities:
+    type: git
+    url: https://github.com/MIT-SPARK/config_utilities.git
+    version: 629688a1f6c24ff38130aebd528838a569179dac
+  hydra:
+    type: git
+    url: https://github.com/MIT-SPARK/Hydra.git
+    version: 2e58a35baea629eee8838409771876acff015daf
+  hydra_ros:
+    type: git
+    url: https://github.com/MIT-SPARK/Hydra-ROS.git
+    version: 8f3b7e369e2bda49d24eba889a5bd0dfc5903a62
+  ianvs:
+    type: git
+    url: https://github.com/MIT-SPARK/Ianvs.git
+    version: e76fc7c30b472fa5eee539a0ec2c5c66aef078d6
+  kimera_pgmo:
+    type: git
+    url: https://github.com/MIT-SPARK/Kimera-PGMO.git
+    version: fb45b27543813f314df513e7b8c90e28dce7de8b
+  kimera_rpgo:
+    type: git
+    url: https://github.com/MIT-SPARK/Kimera-RPGO.git
+    version: f1fee0900ef6825bf76304685668235cf5dd008d
+  pose_graph_tools:
+    type: git
+    url: https://github.com/MIT-SPARK/pose_graph_tools.git
+    version: 965dfe864487be9040195c598fd89718563c348c
+  semantic_inference:
+    type: git
+    url: https://github.com/MIT-SPARK/semantic_inference.git
+    version: 6e0dd39cd8ad14a9ceda28ced3610468473ad030
+  spark_dsg:
+    type: git
+    url: https://github.com/MIT-SPARK/Spark-DSG.git
+    version: 3c40997e4ae739c56ed3cdd6ef5e882d403d8b64
+  spatial_hash:
+    type: git
+    url: https://github.com/MIT-SPARK/Spatial-Hash.git
+    version: 8045892f34978d78870d806a50f8e5aefdbe52fc
+  teaser_plusplus:
+    type: git
+    url: https://github.com/MIT-SPARK/TEASER-plusplus.git
+    version: 52a9c52ee7d4c838c5e8a75458c33178be5bfb70

@@ -97,7 +97,7 @@ BT::NodeStatus PickObject::onStart()
     box_threshold_ = 0.35;
   }
 
-    head_tilt_sent_ = false;
+  head_tilt_sent_ = false;
   head_tilt_done_ = false;
   head_goal_handle_.reset();
   head_goal_future_ = {};
@@ -115,26 +115,27 @@ BT::NodeStatus PickObject::onStart()
 
   operation_start_time_ = node_->now();
 
-  if (sendHeadTiltGoalAsync(HEAD_TILT_DOWN, HEAD_TILT_DURATION, head_goal_future_)) {
+  geometry_msgs::msg::PoseStamped fallback_pose;
+  if (getInput("object_pose", fallback_pose)) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "PickObject: using the live graph-miss pose [%.2f, %.2f, %.2f] "
+      "after navigation; no second detection",
+      fallback_pose.pose.position.x,
+      fallback_pose.pose.position.y,
+      fallback_pose.pose.position.z);
+    object_pose_ = fallback_pose;
+    object_height_ = 0.1;
+    object_width_ = 0.05;
+    state_ = PickState::PICKING;
+  } else if (sendHeadTiltGoalAsync(HEAD_TILT_DOWN, HEAD_TILT_DURATION, head_goal_future_)) {
     RCLCPP_INFO(node_->get_logger(), "PickObject: Head tilt goal sent, waiting for acceptance...");
     state_ = PickState::TILTING_HEAD;
   } else {
-    geometry_msgs::msg::PoseStamped cached_pose;
-    if (config().blackboard->get("initial_object_pose", cached_pose)) {
-      RCLCPP_WARN(
-        node_->get_logger(),
-        "PickObject: Head control unavailable, using cached pose [%.2f, %.2f, %.2f]",
-        cached_pose.pose.position.x,
-        cached_pose.pose.position.y,
-        cached_pose.pose.position.z);
-      object_pose_ = cached_pose;
-      object_height_ = 0.1;
-      object_width_ = 0.05;
-      state_ = PickState::PICKING;
-    } else {
-      RCLCPP_INFO(node_->get_logger(), "PickObject: Head unavailable, no cached pose, doing direct detection");
-      state_ = PickState::WAITING_FOR_IMAGE;
-    }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "PickObject: Head unavailable; doing one fresh local detection");
+    state_ = PickState::WAITING_FOR_IMAGE;
   }
 
   return BT::NodeStatus::RUNNING;
@@ -328,10 +329,12 @@ BT::NodeStatus PickObject::onRunning()
             std::sort(samples.begin(), samples.end(), [](const DS& a, const DS& b){ return a.d < b.d; });
             float md = samples.front().d;
             float tol = std::max(0.05f, md*0.15f);
-            std::vector<DS> obj; double sx=0, sy=0;
-            for (auto& s : samples) if (s.d <= md+tol) { obj.push_back(s); sx+=s.x; sy+=s.y; }
+            std::vector<DS> obj;
+            for (auto& s : samples) if (s.d <= md+tol) { obj.push_back(s); }
             if (!obj.empty()) {
-              rcx = sx/obj.size(); rcy = sy/obj.size();
+              // The nearest-depth cluster is reliable for range, but its pixel
+              // centroid is easily skewed by occlusion and depth shadows. Keep
+              // the detector's box center as the grasp ray to avoid lateral drift.
               std::sort(obj.begin(), obj.end(), [](const DS& a, const DS& b){ return a.d < b.d; });
               depth = obj[obj.size()/2].d;
             }
@@ -346,6 +349,19 @@ BT::NodeStatus PickObject::onRunning()
         float bh = detection_response_->bbox[3] - detection_response_->bbox[1];
         object_width_ = (bw * depth) / fx_;
         object_height_ = (bh * depth) / fy_;
+
+        // Registered depth at the detector center measures the visible front
+        // surface. For compact objects, estimate the 3D center by advancing
+        // half the smaller projected extent along the same camera ray. Using
+        // the smaller extent avoids over-correcting elongated objects and,
+        // unlike a fixed XY offset, remains valid as the camera/head moves.
+        const float estimated_diameter = std::min(object_width_, object_height_);
+        const float surface_depth = depth;
+        depth += 0.5f * estimated_diameter;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "PickObject: front surface %.3fm, projected extent %.3fm, center depth %.3fm",
+          surface_depth, estimated_diameter, depth);
       }
 
       std::string cf = latest_image_->header.frame_id;
@@ -357,7 +373,7 @@ BT::NodeStatus PickObject::onRunning()
         "PickObject: DETECTION DIAGNOSTICS:"
         "\n  bbox: [%.0f, %.0f, %.0f, %.0f]"
         "\n  center: (%.1f, %.1f) -> refined: (%.1f, %.1f)"
-        "\n  depth: %.3fm  fx: %.2f  fy: %.2f  cx: %.2f  cy: %.2f"
+        "\n  center depth: %.3fm  fx: %.2f  fy: %.2f  cx: %.2f  cy: %.2f"
         "\n  object_pose (map): (%.3f, %.3f, %.3f)"
         "\n  has_camera_info: %s",
         detection_response_->bbox.size() >= 4 ? detection_response_->bbox[0] : 0,
@@ -385,6 +401,27 @@ BT::NodeStatus PickObject::onRunning()
     case PickState::PICKING:
     {
       if (!pick_sent_) {
+        try {
+          auto base_pose = tf_buffer_->transform(
+            object_pose_, "base_footprint", tf2::durationFromSec(0.5));
+          const double planar_distance = std::hypot(
+            base_pose.pose.position.x, base_pose.pose.position.y);
+          if (planar_distance > MAX_MANIPULATION_DISTANCE ||
+              base_pose.pose.position.z < 0.02 ||
+              base_pose.pose.position.z > 1.50) {
+            RCLCPP_ERROR(
+              node_->get_logger(),
+              "PickObject: target is outside the manipulation envelope "
+              "(distance %.2fm, height %.2fm)",
+              planar_distance, base_pose.pose.position.z);
+            return BT::NodeStatus::FAILURE;
+          }
+        } catch (const tf2::TransformException & ex) {
+          RCLCPP_ERROR(
+            node_->get_logger(),
+            "PickObject: cannot validate target reachability: %s", ex.what());
+          return BT::NodeStatus::FAILURE;
+        }
         if (!manipulator_client_->wait_for_service(0s)) {
           return BT::NodeStatus::RUNNING;
         }
@@ -410,10 +447,51 @@ BT::NodeStatus PickObject::onRunning()
       if (!pick_response_) return BT::NodeStatus::FAILURE;
 
       if (pick_response_->success) {
+        if (head_tilt_done_) {
+          head_goal_handle_.reset();
+          head_goal_future_ = {};
+          head_result_future_ = {};
+          operation_start_time_ = node_->now();
+          if (sendHeadTiltGoalAsync(
+                HEAD_TILT_NEUTRAL, HEAD_TILT_DURATION, head_goal_future_)) {
+            state_ = PickState::RETURNING_HEAD;
+            return BT::NodeStatus::RUNNING;
+          }
+        }
         state_ = PickState::DONE;
         return BT::NodeStatus::SUCCESS;
       }
+      if (head_tilt_done_) {
+        std::shared_future<GoalHandle::SharedPtr> ignored;
+        sendHeadTiltGoalAsync(HEAD_TILT_NEUTRAL, HEAD_TILT_DURATION, ignored);
+      }
       return BT::NodeStatus::FAILURE;
+    }
+
+    case PickState::RETURNING_HEAD:
+    {
+      if (!head_goal_handle_) {
+        if (head_goal_future_.valid() &&
+            head_goal_future_.wait_for(0s) == std::future_status::ready) {
+          head_goal_handle_ = head_goal_future_.get();
+          if (head_goal_handle_) {
+            head_result_future_ = head_client_->async_get_result(head_goal_handle_);
+          }
+        }
+      } else if (
+        head_result_future_.valid() &&
+        head_result_future_.wait_for(0s) == std::future_status::ready)
+      {
+        head_result_future_.get();
+        state_ = PickState::DONE;
+        return BT::NodeStatus::SUCCESS;
+      }
+      if ((node_->now() - operation_start_time_).seconds() > HEAD_TILT_TIMEOUT) {
+        RCLCPP_WARN(node_->get_logger(), "PickObject: timed out restoring neutral head pose");
+        state_ = PickState::DONE;
+        return BT::NodeStatus::SUCCESS;
+      }
+      return BT::NodeStatus::RUNNING;
     }
 
     case PickState::DONE:

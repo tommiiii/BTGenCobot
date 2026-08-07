@@ -2,7 +2,7 @@
   "house_pick_and_place": {
     "label": "TIAGo House (Pick and Place)",
     "world_file": "house_pick_and_place",
-    "map_file": "",
+    "map_file": "/workspace/maps/house_pick_and_place.yaml",
     "spawn": {
       "x": 0.0,
       "y": 0.0,

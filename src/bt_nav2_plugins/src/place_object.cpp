@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include "cv_bridge/cv_bridge.hpp"
+#include "trajectory_msgs/msg/joint_trajectory_point.hpp"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
@@ -36,6 +37,8 @@ PlaceObject::PlaceObject(
     "/detect_object");
   manipulator_client_ = service_node_->create_client<btgencobot_interfaces::srv::ManipulatorAction>(
     "/manipulator_action");
+  head_client_ = rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
+    service_node_, "/head_controller/follow_joint_trajectory");
 
   auto camera_qos = rclcpp::QoS(10).reliability(rclcpp::ReliabilityPolicy::Reliable);
 
@@ -57,9 +60,27 @@ PlaceObject::PlaceObject(
   RCLCPP_INFO(node_->get_logger(), "PlaceObject BT node initialized");
 }
 
+bool PlaceObject::sendHeadTiltGoalAsync(
+  double head_2_radians,
+  double duration_sec,
+  std::shared_future<GoalHandle::SharedPtr> & out_future)
+{
+  if (!head_client_->wait_for_action_server(1s)) {
+    return false;
+  }
+  control_msgs::action::FollowJointTrajectory::Goal goal;
+  goal.trajectory.joint_names = {"head_1_joint", "head_2_joint"};
+  trajectory_msgs::msg::JointTrajectoryPoint point;
+  point.positions = {0.0, head_2_radians};
+  point.time_from_start = rclcpp::Duration::from_seconds(duration_sec);
+  goal.trajectory.points.push_back(point);
+  out_future = head_client_->async_send_goal(goal);
+  return true;
+}
+
 BT::NodeStatus PlaceObject::onStart()
 {
-  RCLCPP_INFO(node_->get_logger(), "PlaceObject: Starting place operation with close-range detection");
+  RCLCPP_INFO(node_->get_logger(), "PlaceObject: Starting place operation");
 
   if (!getInput<std::string>("place_description", place_description_)) {
     RCLCPP_ERROR(node_->get_logger(), "PlaceObject: Missing required input 'place_description'");
@@ -77,6 +98,9 @@ BT::NodeStatus PlaceObject::onStart()
     box_threshold_);
 
   state_ = PlaceState::WAITING_FOR_IMAGE;
+  head_goal_handle_.reset();
+  head_goal_future_ = {};
+  head_result_future_ = {};
   detection_sent_ = false;
   detection_received_ = false;
   detection_response_.reset();
@@ -87,7 +111,32 @@ BT::NodeStatus PlaceObject::onStart()
   latest_depth_.reset();
   has_camera_info_ = false;
 
+  geometry_msgs::msg::PoseStamped graph_pose;
+  if (getInput("place_pose", graph_pose) && !graph_pose.header.frame_id.empty()) {
+    place_pose_ = graph_pose;
+    state_ = PlaceState::PLACING;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "PlaceObject: Using Hydra support pose [%.3f, %.3f, %.3f]; skipping live detection",
+      place_pose_.pose.position.x,
+      place_pose_.pose.position.y,
+      place_pose_.pose.position.z);
+    return BT::NodeStatus::RUNNING;
+  }
+
   operation_start_time_ = node_->now();
+  camera_ready_after_ = operation_start_time_;
+  if (sendHeadTiltGoalAsync(
+        HEAD_TILT_PLACE, HEAD_TILT_DURATION, head_goal_future_)) {
+    state_ = PlaceState::AIMING_CAMERA;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "PlaceObject: aiming the camera at the nearby support surface");
+  } else {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "PlaceObject: head controller unavailable; using the current camera view");
+  }
 
   return BT::NodeStatus::RUNNING;
 }
@@ -97,24 +146,84 @@ BT::NodeStatus PlaceObject::onRunning()
   rclcpp::spin_some(service_node_);
 
   switch (state_) {
+    case PlaceState::AIMING_CAMERA:
+    {
+      if (!head_goal_handle_) {
+        if (!head_goal_future_.valid() ||
+            head_goal_future_.wait_for(0s) != std::future_status::ready) {
+          if ((node_->now() - operation_start_time_).seconds() > HEAD_TILT_TIMEOUT) {
+            RCLCPP_WARN(node_->get_logger(), "PlaceObject: head aim timed out");
+            operation_start_time_ = node_->now();
+            state_ = PlaceState::WAITING_FOR_IMAGE;
+          }
+          return BT::NodeStatus::RUNNING;
+        }
+        head_goal_handle_ = head_goal_future_.get();
+        if (!head_goal_handle_) {
+          RCLCPP_WARN(node_->get_logger(), "PlaceObject: head aim was rejected");
+          operation_start_time_ = node_->now();
+          state_ = PlaceState::WAITING_FOR_IMAGE;
+          return BT::NodeStatus::RUNNING;
+        }
+        head_result_future_ = head_client_->async_get_result(head_goal_handle_);
+        return BT::NodeStatus::RUNNING;
+      }
+      if (head_result_future_.valid() &&
+          head_result_future_.wait_for(0s) == std::future_status::ready) {
+        head_result_future_.get();
+        operation_start_time_ = node_->now();
+        camera_ready_after_ = operation_start_time_ +
+          rclcpp::Duration::from_seconds(CAMERA_SETTLE_SEC);
+        latest_image_.reset();
+        latest_depth_.reset();
+        state_ = PlaceState::WAITING_FOR_IMAGE;
+        return BT::NodeStatus::RUNNING;
+      }
+      if ((node_->now() - operation_start_time_).seconds() > HEAD_TILT_TIMEOUT) {
+        RCLCPP_WARN(node_->get_logger(), "PlaceObject: head aim result timed out");
+        operation_start_time_ = node_->now();
+        state_ = PlaceState::WAITING_FOR_IMAGE;
+      }
+      return BT::NodeStatus::RUNNING;
+    }
+
     case PlaceState::WAITING_FOR_IMAGE:
     {
-      if (!latest_image_) {
+      if (node_->now() < camera_ready_after_) {
+        latest_image_.reset();
+        latest_depth_.reset();
+        return BT::NodeStatus::RUNNING;
+      }
+      if (!latest_image_ || !latest_depth_) {
         RCLCPP_WARN_THROTTLE(
           node_->get_logger(),
           *node_->get_clock(),
           1000,
-          "PlaceObject: Waiting for camera image...");
+          "PlaceObject: Waiting for synchronized RGB-D data...");
         return BT::NodeStatus::RUNNING;
       }
 
       rclcpp::Time image_time(latest_image_->header.stamp);
-      if (image_time < operation_start_time_) {
+      rclcpp::Time depth_time(latest_depth_->header.stamp);
+      if (
+        image_time < operation_start_time_ ||
+        depth_time < operation_start_time_)
+      {
         RCLCPP_INFO_THROTTLE(
           node_->get_logger(),
           *node_->get_clock(),
           500,
           "PlaceObject: Discarding stale image, waiting for fresh one...");
+        latest_image_.reset();
+        latest_depth_.reset();
+        return BT::NodeStatus::RUNNING;
+      }
+      if (std::abs((image_time - depth_time).seconds()) > 0.08) {
+        RCLCPP_INFO_THROTTLE(
+          node_->get_logger(),
+          *node_->get_clock(),
+          500,
+          "PlaceObject: RGB/depth pair is not synchronized; waiting");
         latest_image_.reset();
         latest_depth_.reset();
         return BT::NodeStatus::RUNNING;
@@ -220,22 +329,27 @@ BT::NodeStatus PlaceObject::onRunning()
             x2 = std::max(0, std::min(x2, depth_ptr->image.cols - 1));
             y2 = std::max(0, std::min(y2, depth_ptr->image.rows - 1));
 
+            int width = x2 - x1;
             int height = y2 - y1;
-            int top_region_y2 = y1 + height / 3;
-
-            int margin_x = (x2 - x1) * 0.15;
+            int margin_x = width * 0.20;
+            int margin_y = height * 0.20;
             int inner_x1 = x1 + margin_x;
             int inner_x2 = x2 - margin_x;
+            int inner_y1 = y1 + margin_y;
+            int inner_y2 = y2 - margin_y;
 
             RCLCPP_INFO(
               node_->get_logger(),
-              "PlaceObject: Sampling depth from top region (%d,%d)-(%d,%d)",
-              inner_x1, y1, inner_x2, top_region_y2);
+              "PlaceObject: Sampling depth from central support region (%d,%d)-(%d,%d)",
+              inner_x1, inner_y1, inner_x2, inner_y2);
 
             int sample_stride = 2;
-            for (int y = y1; y <= top_region_y2; y += sample_stride) {
+            for (int y = inner_y1; y <= inner_y2; y += sample_stride) {
               for (int x = inner_x1; x <= inner_x2; x += sample_stride) {
                 float d = depth_ptr->image.at<float>(y, x);
+                if (d > 10.0f) {
+                  d /= 1000.0f;
+                }
                 if (!std::isnan(d) && d > 0.1 && d < 10.0) {
                   depth_samples.push_back({d, x, y});
                 }
@@ -274,6 +388,27 @@ BT::NodeStatus PlaceObject::onRunning()
       }
 
       place_pose_ = computePlacePose(place_center_x, place_center_y, depth, camera_frame);
+      try {
+        auto base_pose = tf_buffer_->transform(
+          place_pose_, "base_footprint", tf2::durationFromSec(0.5));
+        const double planar_distance = std::hypot(
+          base_pose.pose.position.x, base_pose.pose.position.y);
+        if (planar_distance > MAX_MANIPULATION_DISTANCE ||
+            base_pose.pose.position.z < 0.15 ||
+            base_pose.pose.position.z > 1.45) {
+          RCLCPP_ERROR(
+            node_->get_logger(),
+            "PlaceObject: detected support is outside the manipulation envelope "
+            "(distance %.2fm, height %.2fm)",
+            planar_distance, base_pose.pose.position.z);
+          return BT::NodeStatus::FAILURE;
+        }
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "PlaceObject: cannot validate support reachability: %s", ex.what());
+        return BT::NodeStatus::FAILURE;
+      }
 
       state_ = PlaceState::PLACING;
       RCLCPP_INFO(
@@ -360,6 +495,9 @@ void PlaceObject::onHalted()
   RCLCPP_INFO(node_->get_logger(), "PlaceObject: Halted");
 
   state_ = PlaceState::WAITING_FOR_IMAGE;
+  head_goal_handle_.reset();
+  head_goal_future_ = {};
+  head_result_future_ = {};
   detection_sent_ = false;
   detection_received_ = false;
   detection_response_.reset();

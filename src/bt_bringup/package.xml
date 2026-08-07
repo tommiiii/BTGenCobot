@@ -32,6 +32,7 @@
   <exec_depend>bt_text_interface</exec_depend>
   <exec_depend>vision_services</exec_depend>
   <exec_depend>manipulator_control</exec_depend>
+  <exec_depend>semantic_exploration</exec_depend>
   <exec_depend>tiago_gazebo</exec_depend>
   <exec_depend>tiago_2dnav</exec_depend>
 

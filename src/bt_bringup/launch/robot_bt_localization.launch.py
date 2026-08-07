@@ -16,6 +16,7 @@ from launch.actions import (
     SetLaunchConfiguration,
     TimerAction,
 )
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -67,6 +68,8 @@ def generate_launch_description():
     inference_server_url = LaunchConfiguration('inference_server_url')
     bt_output_dir = LaunchConfiguration('bt_output_dir')
     vision_startup_delay = LaunchConfiguration('vision_startup_delay')
+    generation_timeout = LaunchConfiguration('generation_timeout')
+    use_rviz = LaunchConfiguration('use_rviz')
 
     # Declare launch arguments
     declare_use_sim_time_cmd = DeclareLaunchArgument(
@@ -77,8 +80,8 @@ def generate_launch_description():
 
     declare_environment_cmd = DeclareLaunchArgument(
         'environment',
-        default_value='aws_small_house',
-        description='Environment profile: aws_small_house | aws_hospital'
+        default_value='house_pick_and_place',
+        description='Environment profile: house_pick_and_place | aws_small_house | aws_hospital'
     )
 
     declare_inference_server_url_cmd = DeclareLaunchArgument(
@@ -99,6 +102,18 @@ def generate_launch_description():
         description='Delay GroundingDINO startup until navigation is active'
     )
 
+    declare_generation_timeout_cmd = DeclareLaunchArgument(
+        'generation_timeout',
+        default_value='120.0',
+        description='Wall-clock timeout for local constrained generation'
+    )
+
+    declare_use_rviz_cmd = DeclareLaunchArgument(
+        'use_rviz',
+        default_value='true',
+        description='Start RViz in the VNC desktop'
+    )
+
     # Launch Gazebo with TIAGo robot
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -108,6 +123,9 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'is_public_sim': 'True',
             'world_name': resolved_world,
+            'spawn_x': resolved_spawn_x,
+            'spawn_y': resolved_spawn_y,
+            'spawn_yaw': resolved_spawn_yaw,
             'arm_type': 'tiago-arm',
             'end_effector': 'pal-gripper',
             'ft_sensor': 'schunk-ft',
@@ -157,7 +175,7 @@ def generate_launch_description():
                     'global_frame_id': 'map',
                     'odom_frame_id': 'odom',
                     'base_frame_id': 'base_footprint',
-                    'scan_topic': 'scan',
+                    'scan_topic': 'scan_raw',
                     'robot_model_type': 'nav2_amcl::DifferentialMotionModel',
                     'set_initial_pose': True,
                     'initial_pose.x': ParameterValue(
@@ -231,7 +249,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'inference_server_url': inference_server_url,
             'bt_output_dir': bt_output_dir,
-            'generation_timeout': 30.0,
+            'generation_timeout': generation_timeout,
             'execution_timeout': 300.0
         }],
         output='screen',
@@ -259,6 +277,18 @@ def generate_launch_description():
         ],
     )
 
+    # Last-resort graph-miss fallback: one GroundingDINO request against the
+    # current synchronized RGB-D view.
+    semantic_live_fallback = Node(
+        package='semantic_exploration',
+        executable='semantic_live_fallback',
+        name='semantic_live_fallback',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+        }],
+        output='screen',
+    )
+
     # Launch Manipulator Control Service (pick/place using ikpy)
     manipulator_service = Node(
         package='manipulator_control',
@@ -282,9 +312,15 @@ def generate_launch_description():
             'tls': False,
             'certfile': '',
             'keyfile': '',
-            'topic_whitelist': ['.*'],
-            'service_whitelist': ['.*'],
-            'param_whitelist': ['.*'],
+            'topic_whitelist': [
+                r'^(?!/hydra/|/hydra_visualizer/(mesh|static_objects)$).*'
+            ],
+            'service_whitelist': [
+                r'^(?!/hydra/|/hydra_visualizer/).*'
+            ],
+            'param_whitelist': [
+                r'^(?!/hydra/|/hydra_visualizer/).*'
+            ],
             'client_topic_whitelist': ['.*'],  # Enable client publishing on all topics
             'use_sim_time': use_sim_time,
             'capabilities': ['clientPublish', 'services', 'parameters', 'connectionGraph'],
@@ -313,6 +349,27 @@ def generate_launch_description():
         output='screen',
     )
 
+    rviz2_node = TimerAction(
+        period=26.0,
+        actions=[
+            Node(
+                package='rviz2',
+                executable='rviz2',
+                name='rviz2',
+                parameters=[{'use_sim_time': use_sim_time}],
+                arguments=[
+                    '-d',
+                    os.path.join(
+                        get_package_share_directory('tiago_2dnav'),
+                        'config', 'rviz', 'navigation.rviz'
+                    )
+                ],
+                condition=IfCondition(use_rviz),
+                output='screen',
+            )
+        ],
+    )
+
     # Create launch description
     ld = LaunchDescription()
 
@@ -322,6 +379,8 @@ def generate_launch_description():
     ld.add_action(declare_inference_server_url_cmd)
     ld.add_action(declare_bt_output_dir_cmd)
     ld.add_action(declare_vision_startup_delay_cmd)
+    ld.add_action(declare_generation_timeout_cmd)
+    ld.add_action(declare_use_rviz_cmd)
 
     # Add launch files
     profiles_file = os.path.join(
@@ -351,11 +410,13 @@ def generate_launch_description():
 
     # Add GroundingDINO Service (object detection)
     ld.add_action(grounding_dino_service)
+    ld.add_action(semantic_live_fallback)
 
     # Add Manipulator Control Service (pick/place)
     ld.add_action(manipulator_service)
 
     # Add Foxglove Bridge
     ld.add_action(foxglove_bridge)
+    ld.add_action(rviz2_node)
 
     return ld

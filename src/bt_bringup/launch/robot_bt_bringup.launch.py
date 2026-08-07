@@ -1,219 +1,77 @@
 #!/usr/bin/env python3
-"""
-Complete Launch File for BT Generation System
-Launches Gazebo, SLAM/Nav2, BT Interface Node, and Foxglove Bridge
-Based on full_nav2_bringup.launch.py
+"""Normal task bringup using the saved map and persistent Hydra DSG.
+
+The official Hydra adapter runs in the ``btgencobot-hydra`` companion
+container and loads the saved DSG. This launch owns the simulation-side
+localization, Nav2, BT generation/execution, perception, and visualization
+processes.
 """
 
 import os
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    # Get package directories
+    pkg_bt_bringup = get_package_share_directory("bt_bringup")
 
-    pkg_bt_bringup = get_package_share_directory('bt_bringup')
+    use_sim_time = LaunchConfiguration("use_sim_time")
+    environment = LaunchConfiguration("environment")
+    inference_server_url = LaunchConfiguration("inference_server_url")
+    bt_output_dir = LaunchConfiguration("bt_output_dir")
+    vision_startup_delay = LaunchConfiguration("vision_startup_delay")
+    generation_timeout = LaunchConfiguration("generation_timeout")
+    use_rviz = LaunchConfiguration("use_rviz")
 
-    # Launch configuration variables
-    use_sim_time = LaunchConfiguration('use_sim_time')
-    world = LaunchConfiguration('world')
-    slam_mode = LaunchConfiguration('slam_mode')
-    inference_server_url = LaunchConfiguration('inference_server_url')
-    bt_output_dir = LaunchConfiguration('bt_output_dir')
-
-    # Declare launch arguments
-    declare_use_sim_time_cmd = DeclareLaunchArgument(
-        'use_sim_time',
-        default_value='true',
-        description='Use simulation (Gazebo) clock if true'
-    )
-
-    declare_world_cmd = DeclareLaunchArgument(
-        'world',
-        default_value='house_pick_and_place',
-        description='Full path to world file to load, or name of a br2_gazebo_world'
-    )
-
-    declare_slam_mode_cmd = DeclareLaunchArgument(
-        'slam_mode',
-        default_value='true',
-        description='Whether to run in SLAM mode (true) or use pre-built map (false)'
-    )
-
-    declare_inference_server_url_cmd = DeclareLaunchArgument(
-        'inference_server_url',
-        default_value='http://host.docker.internal:8080',
-        description='URL of the BT generation inference server'
-    )
-
-    declare_bt_output_dir_cmd = DeclareLaunchArgument(
-        'bt_output_dir',
-        default_value='/workspace/generated_bts',
-        description='Directory to save generated BehaviorTrees'
-    )
-
-    # Launch Gazebo with TIAGo robot
-    gazebo_launch = IncludeLaunchDescription(
+    localization_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('tiago_gazebo'), 'launch', 'tiago_gazebo.launch.py')
+            os.path.join(
+                pkg_bt_bringup,
+                "launch",
+                "robot_bt_localization.launch.py",
+            )
         ),
         launch_arguments={
-            'use_sim_time': use_sim_time,
-            'is_public_sim': 'True',
-            'world_name': world,
-            'arm_type': 'tiago-arm',
-            'end_effector': 'pal-gripper',
-            'ft_sensor': 'schunk-ft',
-            'camera_model': 'orbbec-astra',
-            'laser_model': 'sick-571',
-            'base_type': 'pmb2',
-            'moveit': 'True'
-        }.items()
+            "use_sim_time": use_sim_time,
+            "environment": environment,
+            "inference_server_url": inference_server_url,
+            "bt_output_dir": bt_output_dir,
+            "vision_startup_delay": vision_startup_delay,
+            "generation_timeout": generation_timeout,
+            "use_rviz": use_rviz,
+        }.items(),
     )
 
-    # Launch SLAM Toolbox
-    slam_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_bt_bringup, 'launch', 'slam.launch.py')
-        ),
-        launch_arguments={
-            'use_sim_time': use_sim_time
-        }.items()
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("use_sim_time", default_value="true"),
+            DeclareLaunchArgument(
+                "environment",
+                default_value="house_pick_and_place",
+                description="Environment profile backed by a saved map",
+            ),
+            DeclareLaunchArgument(
+                "inference_server_url",
+                default_value="http://host.docker.internal:8080",
+            ),
+            DeclareLaunchArgument(
+                "bt_output_dir",
+                default_value="/workspace/generated_bts",
+            ),
+            DeclareLaunchArgument(
+                "vision_startup_delay",
+                default_value="70.0",
+            ),
+            DeclareLaunchArgument(
+                "generation_timeout",
+                default_value="120.0",
+                description="Wall-clock timeout for local constrained generation",
+            ),
+            DeclareLaunchArgument("use_rviz", default_value="true"),
+            localization_launch,
+        ]
     )
-
-    # Launch Nav2
-    nav2_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_bt_bringup, 'launch', 'nav2_bringup.launch.py')
-        ),
-        launch_arguments={
-            'use_sim_time': use_sim_time
-        }.items()
-    )
-
-    # Launch BT Text Interface Node (Action Server for BT generation)
-    bt_interface_node = Node(
-        package='bt_text_interface',
-        executable='bt_interface_node',
-        name='bt_interface_node',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'inference_server_url': inference_server_url,
-            'bt_output_dir': bt_output_dir,
-            'generation_timeout': 30.0,
-            'execution_timeout': 300.0
-        }],
-        output='screen',
-        emulate_tty=True
-    )
-
-    # Launch GroundingDINO Object Detection Service
-    # Uses GroundingDINO-Tiny for text-prompted open-vocabulary object detection
-    grounding_dino_service = Node(
-        package='vision_services',
-        executable='grounding_dino_service',
-        name='grounding_dino_service',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'use_mock': False,
-            'model_name': 'IDEA-Research/grounding-dino-tiny',
-            'device': 'auto',
-            'publish_debug_images': True,
-        }],
-        output='screen',
-    )
-
-    # Launch Manipulator Control Service
-    # Uses ikpy for inverse kinematics and ros2_control for trajectory execution
-    manipulator_service = Node(
-        package='manipulator_control',
-        executable='manipulator_service',
-        name='manipulator_service',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-        }],
-        output='screen',
-    )
-
-    # Frontend compatibility relays: /head_front_camera/image -> /camera,
-    # /scan_raw -> /scan, /head_front_camera/camera_info -> /camera_info so the
-    # companion web frontend works unchanged on the TIAGo stack.
-    frontend_relay = Node(
-        package='bt_bringup',
-        executable='frontend_relay.py',
-        name='frontend_relay',
-        parameters=[{'use_sim_time': use_sim_time}],
-        output='screen',
-    )
-
-
-    # Launch Foxglove Bridge with client publish capability
-    foxglove_bridge = Node(
-        package='foxglove_bridge',
-        executable='foxglove_bridge',
-        name='foxglove_bridge',
-        parameters=[{
-            'port': 8765,
-            'address': '0.0.0.0',
-            'tls': False,
-            'certfile': '',
-            'keyfile': '',
-            'topic_whitelist': ['.*'],
-            'service_whitelist': ['.*'],
-            'param_whitelist': ['.*'],
-            'client_topic_whitelist': ['.*'],  # Enable client publishing on all topics
-            'use_sim_time': use_sim_time,
-            'capabilities': ['clientPublish', 'services', 'parameters', 'connectionGraph'],
-        }],
-        output='screen'
-    )
-
-    # Launch RViz2
-    rviz2_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        parameters=[{'use_sim_time': use_sim_time}],
-        arguments=['-d', os.path.join(get_package_share_directory('tiago_2dnav'), 'config', 'rviz', 'navigation.rviz')],
-        output='screen'
-    )
-
-    # Create launch description
-    ld = LaunchDescription()
-
-    # Add launch arguments
-    ld.add_action(declare_use_sim_time_cmd)
-    ld.add_action(declare_world_cmd)
-    ld.add_action(declare_slam_mode_cmd)
-    ld.add_action(declare_inference_server_url_cmd)
-    ld.add_action(declare_bt_output_dir_cmd)
-
-    # Add launch files
-    ld.add_action(gazebo_launch)
-    ld.add_action(slam_launch)
-    ld.add_action(nav2_launch)
-
-    # Add BT Interface Node (main action server)
-    ld.add_action(bt_interface_node)
-
-    # Add GroundingDINO Service (object detection)
-    ld.add_action(grounding_dino_service)
-
-    # Add Manipulator Control Service (pick/place operations)
-    ld.add_action(manipulator_service)
-
-    # Add Frontend Relay (sensor topic contract for the companion web frontend)
-    ld.add_action(frontend_relay)
-
-    # Add Foxglove Bridge
-    ld.add_action(foxglove_bridge)
-
-    # Add RViz2
-    ld.add_action(rviz2_node)
-
-    return ld

@@ -47,6 +47,17 @@ inference_server/.env
 # Gazebo
 .gazebo/
 
+# Persistent runtime data (saved by mapping/Hydra, not source code)
+hydra_data/
+
+# Mapping RGB-D runtime data
+maps/*_semantic_keyframes*/
+
+# Failed/smoke mapping artifacts
+maps/*.failed_*
+maps/*smoke*.pgm
+maps/*smoke*.yaml
+
 # CoppeliaSim build artifacts
 coppelia/sim_ros2_interface/build/
 coppelia/sim_ros2_interface/install/

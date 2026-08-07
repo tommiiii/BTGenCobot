@@ -1,0 +1,16 @@
+enable_zmq_interface: false
+publish_backend_tf: false
+robot_id: 0
+input:
+  type: RosInput
+  inputs:
+    camera:
+      receiver:
+        type: ClosedSetImageReceiver
+        queue_size: 30
+      sensor:
+        type: camera_info
+        min_range: 0.35
+        max_range: 5.0
+        extrinsics:
+          type: ros

@@ -1,0 +1,26 @@
+uint8 STATUS_OK=0
+uint8 STATUS_GRAPH_NOT_READY=1
+uint8 STATUS_UNKNOWN_DESTINATION=2
+uint8 STATUS_AMBIGUOUS_DESTINATION=3
+uint8 STATUS_STALE_DESTINATION=4
+uint8 STATUS_NO_TRAVERSABLE_PLACE=5
+uint8 STATUS_UNREACHABLE=6
+uint8 STATUS_INTERNAL_ERROR=7
+string entity_ref
+string entity_type
+string label
+string preferred_id
+bool allow_stale
+---
+bool success
+uint8 status
+string destination_id
+string destination_label
+string entity_type
+int64 graph_version
+float32 confidence
+builtin_interfaces/Time observed_at
+string[] topological_path
+geometry_msgs/PoseStamped[] waypoints
+geometry_msgs/PoseStamped destination_pose
+string error_message

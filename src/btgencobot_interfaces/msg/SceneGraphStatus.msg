@@ -1,0 +1,13 @@
+std_msgs/Header header
+bool ready
+bool mapping_complete
+bool loaded_from_disk
+int64 graph_version
+uint32 room_count
+uint32 object_count
+uint32 place_count
+float32 update_rate_hz
+float32 last_update_age_sec
+string persistence_path
+string state
+string error_message

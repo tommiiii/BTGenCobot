@@ -316,24 +316,18 @@ BT::NodeStatus DetectObject::onRunning()
           depth_tolerance = depth_range + 0.05f;
         }
 
-        // Collect object samples (closest cluster) and compute geometric centroid
+        // Collect the closest object samples for a robust range estimate.
+        // Keep the detector's box center for the ray: a depth-cluster centroid
+        // is easily shifted sideways by occlusion and depth shadows.
         std::vector<DepthSample> object_samples;
-        double sum_x = 0.0, sum_y = 0.0;
         
         for (const auto& sample : depth_samples) {
           if (sample.depth <= min_depth + depth_tolerance) {
             object_samples.push_back(sample);
-            // Use unweighted sum for geometric center (symmetric grasp)
-            sum_x += sample.x;
-            sum_y += sample.y;
           }
         }
 
         if (!object_samples.empty()) {
-          // Compute geometric centroid of object cluster
-          refined_center_x = static_cast<float>(sum_x / object_samples.size());
-          refined_center_y = static_cast<float>(sum_y / object_samples.size());
-
           // Use median of object samples for robust depth
           std::sort(object_samples.begin(), object_samples.end(),
             [](const DepthSample& a, const DepthSample& b) { return a.depth < b.depth; });
@@ -376,6 +370,14 @@ BT::NodeStatus DetectObject::onRunning()
   std::string camera_frame = latest_image_->header.frame_id;
   if (camera_frame.empty()) {
     camera_frame = "head_front_camera_depth_optical_frame"; // TIAGo default fallback
+  }
+
+  if (response->bbox.size() >= 4 && depth > 0.0f && fx_ > 0.0 && fy_ > 0.0) {
+    const float bbox_width = response->bbox[2] - response->bbox[0];
+    const float bbox_height = response->bbox[3] - response->bbox[1];
+    const float projected_width = bbox_width * depth / static_cast<float>(fx_);
+    const float projected_height = bbox_height * depth / static_cast<float>(fy_);
+    depth += 0.5f * std::min(projected_width, projected_height);
   }
 
   geometry_msgs::msg::PoseStamped target_pose = pixelToPose(

@@ -12,17 +12,24 @@ find_package(action_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 
 # Generate interfaces
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GenerateAndExecuteBT.action"
+  "msg/ExplorationStatus.msg"
+  "msg/SemanticObjectObservation.msg"
+  "msg/SceneGraphStatus.msg"
   "srv/DetectObject.srv"
+  "srv/DiscoverSemanticObject.srv"
   "srv/ManipulatorAction.srv"
+  "srv/ResolveSemanticNavigation.srv"
   DEPENDENCIES
   action_msgs
   std_msgs
-    geometry_msgs
-    sensor_msgs
+  geometry_msgs
+  sensor_msgs
+  builtin_interfaces
 )
 
 ament_export_dependencies(rosidl_default_runtime)

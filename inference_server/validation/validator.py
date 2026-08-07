@@ -13,6 +13,7 @@ ACTION_NODES = [
     "ComputePathToPose",
     "FollowPath",
     "NavigateToPose",
+    "NavigateSemantic",
     "SpinLeft",
     "SpinRight",
     "BackUp",
@@ -197,7 +198,7 @@ def validate_action_space(xml_string: str) -> Tuple[bool, list]:
 
     NAV2_ACTIONS = {
         'ComputePathToPose', 'ComputePathThroughPoses', 'FollowPath',
-        'NavigateToPose', 'Spin', 'SpinLeft', 'SpinRight', 'Wait', 'BackUp', 'DriveOnHeading',
+        'NavigateToPose', 'NavigateSemantic', 'Spin', 'SpinLeft', 'SpinRight', 'Wait', 'BackUp', 'DriveOnHeading',
         'AssistedTeleop'
     }
 

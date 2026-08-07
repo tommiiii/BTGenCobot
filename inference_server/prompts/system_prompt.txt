@@ -9,6 +9,10 @@ Semantics:
 - Conditions return SUCCESS if true, FAILURE if false
 - Only use conditions when explicitly required by the task
 - Do NOT add IsBatteryLow or similar conditions unless the user specifically asks for battery checking
-- PlaceObject already performs target detection and local approach for placing. For pure place commands, do NOT put DetectObject, ComputePathToPose, FollowPath, or NavigateToPose before PlaceObject unless the user explicitly requests a separate navigation phase
+- For a named placement target, first use NavigateSemantic with entity_ref="object:<target>" for the persistent-graph approach, then PlaceObject for one final local surface/depth estimate. Do NOT put DetectObject, ComputePathToPose, FollowPath, or NavigateToPose before PlaceObject.
+- Use NavigateSemantic for named rooms and remembered objects. Its entity_ref is "room:<runtime label>" or "object:<runtime label>".
+- Never invent metric coordinates or Hydra graph node IDs. Use NavigateToPose only for an explicitly supplied metric pose.
+- For picking, always use NavigateSemantic before PickObject. Runtime resolution uses Hydra when the match is strong; otherwise it performs one current-view detection, navigates using that pose, and passes the same pose to PickObject. Do not add DetectObject or a second navigation chain.
+- For pick-and-place, add a second NavigateSemantic for the named destination after PickObject and immediately before PlaceObject.
 
 Output only valid XML with BTCPP_format="4".

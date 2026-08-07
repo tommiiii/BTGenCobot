@@ -63,7 +63,7 @@ def build_alpaca_prompt(command: str, rewritten_input: Optional[str] = None, cus
 
     Args:
         command: Natural language command from user (used if rewritten_input not provided)
-        rewritten_input: Rewritten input from query rewriter (used directly)
+        rewritten_input: Planning notes from the query rewriter
         custom_instruction: Optional custom instruction to override ALPACA_INSTRUCTION
 
     Returns:
@@ -75,8 +75,10 @@ def build_alpaca_prompt(command: str, rewritten_input: Optional[str] = None, cus
 
     # User input
     if rewritten_input:
-        # Use rewritten input directly (from query rewriter)
-        prompt += f"### Input:\n{rewritten_input}\n\n"
+        prompt += (
+            f"### Input:\nOriginal command: {command}\n\n"
+            f"Planner notes:\n{rewritten_input}\n\n"
+        )
     else:
         # Fallback: basic format with command
         prompt += f"### Input:\nThe behavior tree should: {command}\n\n{AVAILABLE_ACTIONS}\n\n"

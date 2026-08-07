@@ -38,8 +38,12 @@ def resolve_environment_profile(context, profiles_file):
             f'Unknown environment "{environment_id}". Supported: {supported}'
         )
 
+    spawn = profile['spawn']
     return [
         SetLaunchConfiguration('resolved_world', profile['world_file']),
+        SetLaunchConfiguration('resolved_spawn_x', str(spawn['x'])),
+        SetLaunchConfiguration('resolved_spawn_y', str(spawn['y'])),
+        SetLaunchConfiguration('resolved_spawn_yaw', str(spawn['yaw'])),
         SetLaunchConfiguration(
             'resolved_slam_max_laser_range',
             str(profile['slam_max_laser_range']),
@@ -54,6 +58,9 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     environment = LaunchConfiguration('environment')
     resolved_world = LaunchConfiguration('resolved_world')
+    resolved_spawn_x = LaunchConfiguration('resolved_spawn_x')
+    resolved_spawn_y = LaunchConfiguration('resolved_spawn_y')
+    resolved_spawn_yaw = LaunchConfiguration('resolved_spawn_yaw')
     inference_server_url = LaunchConfiguration('inference_server_url')
     bt_output_dir = LaunchConfiguration('bt_output_dir')
     slam_params_file = LaunchConfiguration('slam_params_file')
@@ -70,7 +77,7 @@ def generate_launch_description():
 
     declare_environment_cmd = DeclareLaunchArgument(
         'environment',
-        default_value='aws_small_house',
+        default_value='house_pick_and_place',
         description='Environment profile: aws_small_house | aws_hospital | house_pick_and_place'
     )
 
@@ -109,7 +116,10 @@ def generate_launch_description():
             'camera_model': 'orbbec-astra',
             'laser_model': 'sick-571',
             'base_type': 'pmb2',
-            'moveit': 'True'
+            'moveit': 'True',
+            'spawn_x': resolved_spawn_x,
+            'spawn_y': resolved_spawn_y,
+            'spawn_yaw': resolved_spawn_yaw,
         }.items()
     )
 
@@ -206,6 +216,38 @@ def generate_launch_description():
         ]
     )
 
+    semantic_segmentation = TimerAction(
+        period=18.0,
+        actions=[
+            Node(
+                package='vision_services',
+                executable='semantic_segmentation',
+                name='hydra_semantic_segmentation',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'max_rate_hz': 1.0,
+                    'device': 'auto',
+                }],
+                output='screen',
+            )
+        ]
+    )
+
+    semantic_live_fallback = TimerAction(
+        period=18.0,
+        actions=[
+            Node(
+                package='semantic_exploration',
+                executable='semantic_live_fallback',
+                name='semantic_live_fallback',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                }],
+                output='screen',
+            )
+        ]
+    )
+
     manipulator_service = TimerAction(
         period=18.0,
         actions=[
@@ -231,9 +273,15 @@ def generate_launch_description():
             'tls': False,
             'certfile': '',
             'keyfile': '',
-            'topic_whitelist': ['.*'],
-            'service_whitelist': ['.*'],
-            'param_whitelist': ['.*'],
+            'topic_whitelist': [
+                r'^(?!/hydra/|/hydra_visualizer/(mesh|static_objects)$).*'
+            ],
+            'service_whitelist': [
+                r'^(?!/hydra/|/hydra_visualizer/).*'
+            ],
+            'param_whitelist': [
+                r'^(?!/hydra/|/hydra_visualizer/).*'
+            ],
             'client_topic_whitelist': ['.*'],
             'use_sim_time': use_sim_time,
             'capabilities': ['clientPublish', 'services', 'parameters', 'connectionGraph'],
@@ -280,6 +328,8 @@ def generate_launch_description():
     ld.add_action(nav2_launch)
     ld.add_action(bt_interface_node)
     ld.add_action(grounding_dino_service)
+    ld.add_action(semantic_segmentation)
+    ld.add_action(semantic_live_fallback)
     ld.add_action(manipulator_service)
     ld.add_action(foxglove_bridge)
     ld.add_action(rviz2_node)

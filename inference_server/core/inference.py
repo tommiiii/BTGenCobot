@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 logger = logging.getLogger(__name__)
 
 
+
 def _fix_main_tree_to_execute(xml_string: str) -> str:
     """
     Ensure main_tree_to_execute matches the ID of the first BehaviorTree element.
@@ -37,128 +38,13 @@ def _fix_main_tree_to_execute(xml_string: str) -> str:
         return xml_string
 
 
-def _simplify_place_only_bt(xml_string: str, command: str) -> str:
-    """
-    For pure place commands, remove navigation/detection nodes that appear before
-    PlaceObject. PlaceObject already performs target detection and local approach,
-    while nested Nav2 navigation actions can trigger invalid goal preemption.
-    """
-    cmd = command.lower()
-    is_place_only = (
-        any(token in cmd for token in ["place", "put", "set down", "deposit"]) and
-        not any(token in cmd for token in ["pick up", "pick", "grab", "grasp", "take"])
-    )
-    if not is_place_only:
-        return xml_string
 
-    try:
-        root = ET.fromstring(xml_string)
-        behavior_trees = root.findall("BehaviorTree")
-        if not behavior_trees:
-            return xml_string
-
-        for bt in behavior_trees:
-            if len(bt) != 1:
-                continue
-
-            container = bt[0]
-            if container.tag not in {"Sequence", "ReactiveSequence"}:
-                continue
-
-            children = list(container)
-            has_place = any(
-                child.tag == "Action" and child.get("ID") == "PlaceObject"
-                for child in children
-            )
-            has_pick = any(
-                child.tag == "Action" and child.get("ID") == "PickObject"
-                for child in children
-            )
-            if not has_place or has_pick:
-                continue
-
-            filtered_children = []
-            removed = False
-            for child in children:
-                child_id = child.get("ID") if child.tag == "Action" else None
-                if child_id in {"DetectObject", "ComputePathToPose", "FollowPath", "NavigateToPose"}:
-                    removed = True
-                    continue
-                filtered_children.append(child)
-
-            if removed and filtered_children:
-                container[:] = filtered_children
-                logger.info("Simplified pure place BT by removing navigation/detection nodes before PlaceObject")
-
-        return ET.tostring(root, encoding="unicode", xml_declaration=False)
-    except ET.ParseError:
-        return xml_string
-
-
-def _simplify_simple_command_duplicates(xml_string: str, command: str) -> str:
-    """
-    Remove duplicated execution nodes for simple commands where the model may
-    spuriously repeat the same high-level action.
-    """
-    cmd = command.lower()
-    is_place_only = (
-        any(token in cmd for token in ["place", "put", "set down", "deposit"]) and
-        not any(token in cmd for token in ["pick up", "pick", "grab", "grasp", "take"])
-    )
-    is_detect_only = (
-        any(token in cmd for token in ["detect", "find", "look for", "search"]) and
-        not any(token in cmd for token in ["place", "put", "set down", "deposit", "pick up", "pick", "grab", "grasp", "take"])
-    )
-    if not (is_place_only or is_detect_only):
-        return xml_string
-
-    try:
-        root = ET.fromstring(xml_string)
-        behavior_trees = root.findall("BehaviorTree")
-        if not behavior_trees:
-            return xml_string
-
-        for bt in behavior_trees:
-            if len(bt) != 1:
-                continue
-
-            container = bt[0]
-            if container.tag not in {"Sequence", "ReactiveSequence"}:
-                continue
-
-            children = list(container)
-            kept_children = []
-            kept_place = False
-            kept_detect = False
-            modified = False
-
-            for child in children:
-                child_id = child.get("ID") if child.tag == "Action" else None
-
-                if is_place_only and child_id == "PlaceObject":
-                    if kept_place:
-                        modified = True
-                        continue
-                    kept_place = True
-
-                if is_detect_only and child_id == "DetectObject":
-                    if kept_detect:
-                        modified = True
-                        continue
-                    kept_detect = True
-
-                kept_children.append(child)
-
-            if modified and kept_children:
-                container[:] = kept_children
-                logger.info("Removed duplicated action nodes for simple command generation")
-
-        return ET.tostring(root, encoding="unicode", xml_declaration=False)
-    except ET.ParseError:
-        return xml_string
-
-
-def generate_restricted_grammar(allowed_actions: List[str], structure: Optional[str] = None, max_depth: int = 5) -> str:
+def generate_restricted_grammar(
+    allowed_actions: List[str],
+    structure: Optional[str] = None,
+    max_depth: int = 5,
+    max_siblings: int = 12,
+) -> str:
     """
     Generate a restricted EBNF grammar using EXPLICIT syntax: <Action ID="NodeType" .../>.
     Uses depth-limited hierarchy to prevent degenerate infinite nesting.
@@ -182,7 +68,10 @@ def generate_restricted_grammar(allowed_actions: List[str], structure: Optional[
         "ComputePathToPose": ["goal", "path", "planner_id"],
         "FollowPath": ["path", "controller_id"],
         "NavigateToPose": ["goal"],
-        "DetectObject": ["object_description", "target_pose"],
+        "NavigateSemantic": ["entity_ref", "entity_type", "reacquire"],
+        "DetectObject": ["object_description", "target_pose", "object_pose"],
+        # object_pose is runtime-owned and may only be injected after Hydra's
+        # live fallback. It is deliberately unavailable to model generation.
         "PickObject": ["object_description"],
         "PlaceObject": ["place_description"],
         "ClearEntireCostmap": [],
@@ -193,6 +82,7 @@ def generate_restricted_grammar(allowed_actions: List[str], structure: Optional[
         "DetectObject": ["object_description"],
         "PickObject": ["object_description"],
         "PlaceObject": ["place_description"],
+        "NavigateSemantic": ["entity_ref"],
     }
 
     KNOWN_ACTIONS = set(ACTION_PORTS.keys())
@@ -300,7 +190,10 @@ bt_content: node_l1
             grammar += f'keep_running_l{level}: "<KeepRunningUntilFailure" ((" " | "\\t") attribute)* " "? ">" WS? {child_node} WS? "</KeepRunningUntilFailure>"\n\n'
 
             # Node list
-            grammar += f'{child_list}: {child_node} (WS? {child_node})*\n\n'
+            bounded_tail = " ".join(
+                f"(WS? {child_node})?" for _ in range(max_siblings - 1)
+            )
+            grammar += f'{child_list}: {child_node} {bounded_tail}\n\n'
 
     # Generate specific action rules with their exact ports
     grammar += "// Action nodes - each with specific allowed ports\n"
@@ -343,7 +236,18 @@ bt_content: node_l1
     # Define all port attribute rules once (no duplicates)
     grammar += "// Port attribute definitions\n"
     for port in sorted(all_ports):
-        grammar += f'{port}_attr: " " "{port}=\\"" attr_value "\\""\n'
+        if port == "entity_type":
+            grammar += (
+                'entity_type_attr: " " "entity_type=\\\"" '
+                '("room" | "object") "\\\""\n'
+            )
+        elif port == "reacquire":
+            grammar += (
+                'reacquire_attr: " " "reacquire=\\\"" '
+                '("true" | "false") "\\\""\n'
+            )
+        else:
+            grammar += f'{port}_attr: " " "{port}=\\"" attr_value "\\""\n'
 
     grammar += """
 // Generic attribute - any name="value" pair (matches static grammar)
@@ -558,14 +462,48 @@ class BTGenerator:
             else:
                 cfg_pattern = grammar_to_use
 
-            # Call the Outlines model directly with the CFG output type
-            logger.info("Starting model generation...")
-            result = self.outlines_model(
-                prompt,
-                cfg_pattern,
-                max_new_tokens=max_tokens,
-                temperature=temperature
+            # Do not inherit `do_sample` from the model's generation_config.
+            # Some fine-tuned checkpoints enable it by default, which can make
+            # Transformers sample from an invalid probability tensor after the
+            # CFG mask has set most logits to -inf.
+            generation_kwargs = {
+                "max_new_tokens": max_tokens,
+                "do_sample": temperature > 0.0,
+            }
+            if temperature > 0.0:
+                generation_kwargs["temperature"] = temperature
+
+            logger.info(
+                "Starting model generation (%s)...",
+                "sampling" if generation_kwargs["do_sample"] else "greedy",
             )
+            try:
+                result = self.outlines_model(
+                    prompt,
+                    cfg_pattern,
+                    **generation_kwargs,
+                )
+            except RuntimeError as generation_error:
+                probability_error = (
+                    "probability tensor contains" in str(generation_error).lower()
+                )
+                if not generation_kwargs["do_sample"] or not probability_error:
+                    raise
+
+                # Greedy decoding does not construct a probability distribution,
+                # while Outlines still applies the exact same CFG logits mask.
+                # This is a constrained numerical recovery, not an unconstrained
+                # generation fallback.
+                logger.warning(
+                    "CFG sampling produced an invalid probability tensor; "
+                    "retrying once with CFG-constrained greedy decoding"
+                )
+                result = self.outlines_model(
+                    prompt,
+                    cfg_pattern,
+                    max_new_tokens=max_tokens,
+                    do_sample=False,
+                )
 
             gen_time = time.time() - start_time
             logger.info(f"XML generated in {gen_time:.2f}s")
@@ -589,7 +527,8 @@ class BTGenerator:
         temperature: float = 0.6,
         prompt_format: str = "chat",
         rewritten_input: Optional[str] = None,
-        custom_instruction: Optional[str] = None
+        custom_instruction: Optional[str] = None,
+        scene_graph_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate BehaviorTree XML from natural language command
@@ -667,8 +606,6 @@ class BTGenerator:
                     logger.info(f"Post-processing applied: {filter_reason}")
                     xml_result = filtered_xml
 
-                xml_result = _simplify_place_only_bt(xml_result, command)
-                xml_result = _simplify_simple_command_duplicates(xml_result, command)
                 xml_result = _fix_main_tree_to_execute(xml_result)
 
                 is_valid, val_error = validate_bt_xml(xml_result, strict=False)

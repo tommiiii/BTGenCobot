@@ -1,0 +1,11 @@
+string label
+float32 box_threshold
+uint32 max_keyframes
+float32 max_duration_sec
+uint32 max_observations
+---
+bool success
+uint32 observations_added
+float32 best_confidence
+geometry_msgs/PoseStamped detected_pose
+string error_message

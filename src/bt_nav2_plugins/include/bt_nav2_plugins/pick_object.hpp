@@ -34,6 +34,7 @@ namespace bt_nav2_plugins
  *
  * Input Ports:
  *   object_description - Natural language description of object to pick (e.g., "red cup")
+ *   object_pose - Optional live-fallback pose captured before navigation
  *   box_threshold - Detection confidence threshold (default: 0.35)
  */
 class PickObject : public BT::StatefulActionNode
@@ -49,6 +50,8 @@ public:
   {
     return {
       BT::InputPort<std::string>("object_description", "Natural language description of object to pick"),
+      BT::InputPort<geometry_msgs::msg::PoseStamped>(
+        "object_pose", "Pose from the single live graph-miss detection"),
       BT::InputPort<double>("box_threshold", 0.35, "Detection confidence threshold (0-1)")
     };
   }
@@ -117,6 +120,7 @@ private:
     WAITING_FOR_IMAGE,
     DETECTING,
     PICKING,
+    RETURNING_HEAD,
     DONE
   };
   PickState state_;
@@ -132,6 +136,7 @@ private:
   static constexpr double HEAD_TILT_DURATION = 2.0;  // seconds for trajectory
   static constexpr double HEAD_TILT_TIMEOUT = 5.0;   // max wait for result
   static constexpr double POST_TILT_SETTLE_SEC = 1.0; // wait after tilt before accepting images
+  static constexpr double MAX_MANIPULATION_DISTANCE = 0.95;
   rclcpp::Time head_settle_until_;                    // don't accept images before this time
 
   // Detection state

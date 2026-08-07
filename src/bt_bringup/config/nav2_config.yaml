@@ -5,7 +5,10 @@ bt_navigator:
     robot_base_frame: base_footprint
     odom_topic: /odom
     bt_loop_duration: 10
-    default_server_timeout: 20
+    # ROS actions can take more than 20 ms to acknowledge under the Docker
+    # simulation load. This is only the handshake timeout, not a navigation
+    # timeout, so keep it comfortably bounded without aborting valid plans.
+    default_server_timeout: 5000
     always_reload_bt_xml: True
     # Enable Groot monitoring so /behavior_tree_log is published for the
     # frontend's BT supervision panel.
@@ -41,8 +44,8 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.40
-      yaw_goal_tolerance: 3.14
+      xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 0.80
 
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
@@ -68,8 +71,8 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.40
-      trans_stopped_velocity: 0.25
+      xy_goal_tolerance: 0.10
+      trans_stopped_velocity: 0.10
       short_circuit_trajectory_evaluation: True
       stateful: True
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
@@ -96,12 +99,14 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.10
+      # Match PAL's TIAGo/PMB2 public-simulation footprint. The previous
+      # 0.10 m radius planned paths the physical base could not traverse.
+      robot_radius: 0.275
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.10
+        inflation_radius: 0.55
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -127,12 +132,12 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: True
-      robot_radius: 0.10
+      robot_radius: 0.275
       resolution: 0.05
       track_unknown_space: true
-      rolling_window: true
-      width: 20
-      height: 20
+      # A full static map is required by frontier exploration. A rolling
+      # 20-metre window silently hid valid frontiers in larger rooms.
+      rolling_window: false
       always_send_full_costmap: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -154,7 +159,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.10
+        inflation_radius: 0.55
 
 planner_server:
   ros__parameters:

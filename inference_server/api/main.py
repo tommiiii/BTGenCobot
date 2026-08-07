@@ -87,18 +87,22 @@ class GenerateBTRequest(BaseModel):
     """Request model for BT generation"""
     command: str = Field(..., description="Natural language command", min_length=1)
     max_tokens: int = Field(1024, description="Maximum tokens to generate", gt=0, le=4096)
-    temperature: float = Field(0.6, description="Sampling temperature", ge=0.0, le=2.0)
+    temperature: float = Field(0.0, description="Sampling temperature", ge=0.0, le=2.0)
     prompt_format: str = Field("chat", description="Prompt format: 'chat' (Llama chat) or 'alpaca' (instruction format)")
     use_query_rewriting: bool = Field(True, description="Whether to use LLM query rewriting to expand command")
     rewritten_input: str | None = Field(None, description="Optional pre-resolved structured input for grammar restriction")
     custom_instruction: str | None = Field(None, description="Optional custom instruction to override default alpaca_instruction.txt")
+    scene_graph_context: str | None = Field(
+        None,
+        description="Optional runtime summary of labels currently known by Hydra",
+    )
 
     class Config:
         json_schema_extra = {
             "example": {
                 "command": "Pick up the red cup and place it on the table",
                 "max_tokens": 1024,
-                "temperature": 0.6,
+                "temperature": 0.0,
                 "prompt_format": "alpaca",
                 "use_query_rewriting": True
             }
@@ -177,7 +181,7 @@ class SemanticNavigationRequest(BaseModel):
 class ExecuteCommandRequest(BaseModel):
     """Request model for /execute — forward a task request to ROS2."""
     command: str = Field("", description="Natural language command")
-    temperature: float = Field(0.1, description="Sampling temperature", ge=0.0, le=2.0)
+    temperature: float = Field(0.0, description="Sampling temperature", ge=0.0, le=2.0)
     foxglove_ws_url: str = Field("ws://localhost:8765", description="Foxglove Bridge WebSocket URL")
     semantic_navigation: Optional[SemanticNavigationRequest] = Field(
         None,
@@ -286,7 +290,10 @@ async def generate_bt(request: GenerateBTRequest):
         elif request.use_query_rewriting:
             from core.query_rewriter import rewrite_command
             logger.info("Applying query rewriting...")
-            rewritten_input = rewrite_command(request.command)
+            rewritten_input = rewrite_command(
+                request.command,
+                request.scene_graph_context,
+            )
             if rewritten_input:
                 logger.info("=" * 80)
                 logger.info("REWRITTEN INPUT:")
@@ -295,13 +302,31 @@ async def generate_bt(request: GenerateBTRequest):
             else:
                 logger.warning("Query rewriting failed, using original command")
 
+        if request.scene_graph_context:
+            scene_context = request.scene_graph_context.strip()
+            if scene_context:
+                rewritten_input = "\n".join(
+                    part
+                    for part in [
+                        rewritten_input or request.command,
+                        "Hydra scene-graph labels available at runtime:",
+                        scene_context,
+                        (
+                            "Use these labels when they match the command, but keep "
+                            "entity_ref semantic; never invent metric coordinates."
+                        ),
+                    ]
+                    if part
+                )
+
         result = state.generator.generate_bt(
             command=request.command,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
             prompt_format=request.prompt_format,
             rewritten_input=rewritten_input,
-            custom_instruction=request.custom_instruction
+            custom_instruction=request.custom_instruction,
+            scene_graph_context=request.scene_graph_context,
         )
 
         if result["success"]:

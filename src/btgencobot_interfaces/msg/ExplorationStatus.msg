@@ -1,0 +1,15 @@
+std_msgs/Header header
+uint8 IDLE=0
+uint8 WAITING_FOR_MAP=1
+uint8 EXPLORING=2
+uint8 PAUSED=3
+uint8 COMPLETED=4
+uint8 FAILED=5
+uint8 CANCELED=6
+uint8 state
+float32 explored_ratio
+uint32 reachable_frontiers
+uint32 visited_frontiers
+uint32 blacklisted_frontiers
+geometry_msgs/PoseStamped current_goal
+string detail

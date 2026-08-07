@@ -44,11 +44,13 @@ class GroundingDINOService(Node):
         self.declare_parameter('model_name', 'IDEA-Research/grounding-dino-tiny')
         self.declare_parameter('device', 'auto')
         self.declare_parameter('publish_debug_images', True)
+        self.declare_parameter('text_threshold', 0.25)
 
         self.use_mock = self.get_parameter('use_mock').value
         self.model_name = self.get_parameter('model_name').value
         self.device_param = self.get_parameter('device').value
         self.publish_debug_images = self.get_parameter('publish_debug_images').value
+        self.text_threshold = float(self.get_parameter('text_threshold').value)
 
     def _setup_device(self):
         """Setup compute device (CUDA or CPU)"""
@@ -62,21 +64,25 @@ class GroundingDINOService(Node):
         self.get_logger().info(f'Device: {self.device}')
 
     def _initialize_models(self):
-        """Initialize GroundingDINO model or fallback to mock mode"""
+        """Initialize GroundingDINO, failing closed unless mock mode was explicit."""
         self.model = None
         self.processor = None
+        self.initialization_error = ''
         self.bridge = CvBridge()
 
         if not self.use_mock:
             if not DEPENDENCIES_AVAILABLE:
-                self.get_logger().error(f'Dependencies not available: {import_error}')
-                self.get_logger().warning('Falling back to MOCK mode')
-                self.use_mock = True
+                self.initialization_error = (
+                    f'GroundingDINO dependencies are unavailable: {import_error}'
+                )
+                self.get_logger().error(self.initialization_error)
             else:
                 self._load_models()
 
         if self.use_mock:
-            self.get_logger().warning('Running in MOCK MODE - will return fake detections')
+            self.get_logger().warning(
+                'Running in explicitly configured MOCK MODE - detections are synthetic'
+            )
 
     def _load_models(self):
         """Load GroundingDINO model (natively integrated in transformers, no trust_remote_code needed)"""
@@ -95,11 +101,12 @@ class GroundingDINOService(Node):
             self.get_logger().info('GroundingDINO model loaded successfully')
 
         except Exception as e:
-            self.get_logger().error(f'Failed to load GroundingDINO model: {e}')
+            self.initialization_error = f'Failed to load GroundingDINO model: {e}'
+            self.get_logger().error(self.initialization_error)
             import traceback
             self.get_logger().error(traceback.format_exc())
-            self.get_logger().warning('Falling back to MOCK mode')
-            self.use_mock = True
+            self.model = None
+            self.processor = None
 
     def _create_service(self):
         """Create ROS2 service and debug image publisher"""
@@ -169,12 +176,19 @@ class GroundingDINOService(Node):
         """Process detection with GroundingDINO"""
         if self.use_mock:
             return self._mock_detect(image, request.object_description)
-        else:
-            return self._detect_object(
-                image,
-                request.object_description,
-                box_threshold=request.box_threshold
+        if self.model is None or self.processor is None:
+            return self._create_detection_result(
+                detected=False,
+                error=(
+                    self.initialization_error
+                    or 'GroundingDINO model is not initialized'
+                ),
             )
+        return self._detect_object(
+            image,
+            request.object_description,
+            box_threshold=request.box_threshold
+        )
 
     def _detect_object(self, image, text_prompt, box_threshold=0.3):
         """Run GroundingDINO open-vocabulary detection to find the object matching text description"""
@@ -198,9 +212,14 @@ class GroundingDINOService(Node):
             with torch.no_grad():
                 outputs = self.model(**inputs)
 
-            results = self.processor.image_processor.post_process_object_detection(
+            # GroundingDINO needs both box and token-text thresholding. The
+            # generic object-detection postprocessor ignores the text logits
+            # and can therefore return a confident but unrelated query box.
+            results = self.processor.post_process_grounded_object_detection(
                 outputs,
+                inputs.input_ids,
                 threshold=box_threshold,
+                text_threshold=self.text_threshold,
                 target_sizes=[(h, w)]
             )
 
@@ -214,6 +233,7 @@ class GroundingDINOService(Node):
 
             scores = result['scores'].tolist()
             boxes = result['boxes'].tolist()
+            labels = result.get('text_labels', [])
 
             best_idx = int(np.argmax(scores))
             best_score = scores[best_idx]
@@ -223,6 +243,11 @@ class GroundingDINOService(Node):
             cx = (x1 + x2) / 2
             cy = (y1 + y2) / 2
 
+            best_phrase = (
+                labels[best_idx]
+                if best_idx < len(labels) and labels[best_idx]
+                else text_prompt
+            )
             all_detections = []
             for i in range(len(boxes)):
                 box = boxes[i]
@@ -232,7 +257,11 @@ class GroundingDINOService(Node):
                     'center_x': float((box[0] + box[2]) / 2),
                     'center_y': float((box[1] + box[3]) / 2),
                     'confidence': float(score),
-                    'phrase': text_prompt
+                    'phrase': (
+                        labels[i]
+                        if i < len(labels) and labels[i]
+                        else text_prompt
+                    )
                 })
 
             return self._create_detection_result(
@@ -241,7 +270,7 @@ class GroundingDINOService(Node):
                 center_x=float(cx),
                 center_y=float(cy),
                 bbox=[float(x1), float(y1), float(x2), float(y2)],
-                phrase=text_prompt,
+                phrase=best_phrase,
                 mask=None,
                 all_detections=all_detections
             )
@@ -349,7 +378,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

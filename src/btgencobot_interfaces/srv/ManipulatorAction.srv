@@ -1,5 +1,5 @@
 # Request
-string action_type          # "pick" or "place"
+string action_type          # "pick" or "place"; each finishes in transport posture
 geometry_msgs/PoseStamped target_pose  # Where to pick/place
 float32 object_height       # Estimated object height in meters (0 if unknown)
 float32 object_width        # Estimated object width in meters (0 if unknown)

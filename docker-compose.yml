@@ -17,6 +17,7 @@ services:
       - ./robot_description:/workspace/robot_description:cached
       - ./worlds:/workspace/worlds:cached
       - ./models:/workspace/models:cached # Mount models as volume instead of copying
+      - ./models/huggingface:/root/.cache/huggingface:cached
       - ./maps:/workspace/maps:cached # Saved maps for environment-aware bringup
       - ./scripts:/workspace/scripts:cached
       # ROS2 build artifacts (use delegated for better performance)
@@ -35,3 +36,22 @@ services:
     stdin_open: true
     tty: true
     command: /bin/bash
+
+  # Official MIT-SPARK Hydra / Hydra-ROS, isolated from the TIAGo image so its
+  # research dependency tree cannot destabilize Nav2 or manipulation.
+  hydra:
+    build:
+      context: .
+      dockerfile: Dockerfile.hydra
+    container_name: btgencobot-hydra
+    hostname: btgencobot-hydra
+    depends_on:
+      - btgencobot
+    volumes:
+      - ./hydra_data:/data
+    environment:
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - RMW_FASTRTPS_USE_SHM=0
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+    restart: unless-stopped

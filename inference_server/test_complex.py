@@ -81,7 +81,7 @@ def test_generation(command, description=""):
 test_cases = [
     (
         "find the red ball, navigate to it, pick it up, then place it on the table",
-        "Should have: Sequence with DetectObject, ComputePathToPose, FollowPath, PickObject, PlaceObject"
+        "Should have: Sequence with semantic source navigation, PickObject, semantic destination navigation, PlaceObject"
     ),
     (
         "patrol between the kitchen and living room, checking for obstacles",
@@ -101,7 +101,7 @@ test_cases = [
     ),
     (
         "search for any object by spinning around, when found navigate to it and pick it up",
-        "Should have: Sequence with SpinLeft/SpinRight, DetectObject, navigation, PickObject"
+        "Should have: Sequence with SpinLeft/SpinRight, semantic navigation, PickObject"
     ),
 ]
 

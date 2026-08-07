@@ -4,12 +4,15 @@
 #include <string>
 #include <memory>
 #include <atomic>
+#include <future>
 
 #include "behaviortree_cpp/action_node.h"
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
+#include "control_msgs/action/follow_joint_trajectory.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "btgencobot_interfaces/srv/manipulator_action.hpp"
@@ -22,8 +25,9 @@ namespace bt_nav2_plugins
  * @brief BT node to place an object with the manipulator
  *
  * The robot should already be positioned near the place location (via prior navigation).
- * Since Nav2 brings the robot to ~0.45m from the target, TIAGo's 7-DOF arm
- * (reach ~0.8m) can reach it directly without a second approach.
+ * Hydra/Nav2 must bring the robot to a manipulation standoff. This node aims
+ * the camera, refines the support pose, and rejects poses outside the checked
+ * arm envelope.
  *
  * Input Ports:
  *   place_description - Natural language description of where to place (e.g., "table", "box")
@@ -48,6 +52,8 @@ public:
   {
     return {
       BT::InputPort<std::string>("place_description", "Natural language description of where to place"),
+      BT::InputPort<geometry_msgs::msg::PoseStamped>(
+        "place_pose", "Support pose resolved from the Hydra object bounds"),
       BT::InputPort<double>("box_threshold", 0.35, "Detection confidence threshold (0-1)")
     };
   }
@@ -61,6 +67,12 @@ private:
   void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg);
   void depthCallback(const sensor_msgs::msg::Image::SharedPtr msg);
   void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
+  using GoalHandle =
+    rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>;
+  bool sendHeadTiltGoalAsync(
+    double head_2_radians,
+    double duration_sec,
+    std::shared_future<GoalHandle::SharedPtr> & out_future);
 
   // Convert detection result to 3D pose
   geometry_msgs::msg::PoseStamped computePlacePose(
@@ -82,6 +94,7 @@ private:
   // Service clients
   rclcpp::Client<btgencobot_interfaces::srv::DetectObject>::SharedPtr detect_client_;
   rclcpp::Client<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr manipulator_client_;
+  rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr head_client_;
 
   // Subscriptions for camera data
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
@@ -102,12 +115,22 @@ private:
 
   // State machine for the place operation
   enum class PlaceState {
+    AIMING_CAMERA,
     WAITING_FOR_IMAGE,
     DETECTING,
     PLACING,
     DONE
   };
   PlaceState state_;
+  GoalHandle::SharedPtr head_goal_handle_;
+  std::shared_future<GoalHandle::SharedPtr> head_goal_future_;
+  std::shared_future<GoalHandle::WrappedResult> head_result_future_;
+  rclcpp::Time camera_ready_after_;
+  static constexpr double HEAD_TILT_PLACE = -0.65;
+  static constexpr double HEAD_TILT_DURATION = 1.5;
+  static constexpr double HEAD_TILT_TIMEOUT = 5.0;
+  static constexpr double CAMERA_SETTLE_SEC = 0.6;
+  static constexpr double MAX_MANIPULATION_DISTANCE = 0.70;
 
   // Detection state
   btgencobot_interfaces::srv::DetectObject::Response::SharedPtr detection_response_;

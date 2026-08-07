@@ -1,58 +1,15 @@
 """ROS2 Action Server for BehaviorTree Generation and Execution"""
 import json
+from difflib import SequenceMatcher
 import math
 import re
+import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
-
-CURATED_ROOM_ROUTES = {
-    "living room": [
-        {"x": 0.35, "y": 0.05, "frame_id": "map"},
-    ],
-    "kitchen": [
-        {"x": 1.7, "y": 0.05, "frame_id": "map"},
-        {"x": 3.35, "y": 0.0, "frame_id": "map"},
-        {"x": 4.85, "y": -0.05, "frame_id": "map"},
-    ],
-    "bedroom": [
-        {"x": -1.95, "y": 0.16, "frame_id": "map"},
-        {"x": -3.35, "y": 0.48, "frame_id": "map"},
-        {"x": -4.55, "y": 0.85, "frame_id": "map"},
-    ],
-    "charging station": [
-        {"x": 0.35, "y": 0.05, "frame_id": "map"},
-    ],
-}
-
-ROOM_ALIASES = {
-    "living room": "living room",
-    "living-room": "living room",
-    "lounge": "living room",
-    "kitchen": "kitchen",
-    "bedroom": "bedroom",
-    "charging station": "charging station",
-    "charging-station": "charging station",
-    "dock": "charging station",
-    "docking area": "charging station",
-}
-
-# TIAGo house_pick_and_place world semantic waypoints (pose strings for
-# ComputePathToPose/NavigateToPose goals). Used as a fallback resolver when the
-# inference server emits a bare room name instead of metric coordinates, and as
-# the substrate for future HYDRA scene-graph integration.
-WAYPOINTS = {
-    "kitchen": "0;map;6.5;0.9;0.0;0.0;0.0;0.0;1.0",
-    "bedroom": "0;map;-6.1;2.0;0.0;0.0;0.0;0.0;1.0",
-    "livingroom": "0;map;1.5;-1.7;0.0;0.0;0.0;0.0;1.0",
-    "living room": "0;map;1.5;-1.7;0.0;0.0;0.0;0.0;1.0",
-    "bathroom": "0;map;-2.4;1.8;0.0;0.0;0.0;0.0;1.0",
-    "door": "0;map;6.0;-5.5;0.0;0.0;0.0;0.0;1.0",
-}
 
 import requests
 import rclpy
@@ -61,8 +18,13 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
+from rclpy.task import Future
 
 from btgencobot_interfaces.action import GenerateAndExecuteBT
+from btgencobot_interfaces.srv import (
+    DiscoverSemanticObject,
+    ResolveSemanticNavigation,
+)
 from nav2_msgs.action import NavigateToPose
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
@@ -103,6 +65,22 @@ class BTInterfaceNode(Node):
         self.declare_parameter('feedback_rate', 2.0)
         self.declare_parameter('nav_action', '/navigate_to_pose')
         self.declare_parameter('nav_server_wait_timeout', 90.0)
+        self.declare_parameter(
+            'semantic_resolver_service',
+            '/hydra/resolve_semantic_navigation',
+        )
+        self.declare_parameter('semantic_queue_timeout', 1800.0)
+        self.declare_parameter('semantic_queue_poll_period', 2.0)
+        self.declare_parameter('semantic_resolver_call_timeout', 5.0)
+        self.declare_parameter(
+            'semantic_discovery_service',
+            '/mapping/discover_semantic_object',
+        )
+        self.declare_parameter('semantic_discovery_call_timeout', 30.0)
+        # Kept for service-wire compatibility. Unknown objects are grounded
+        # against one current RGB-D frame, never by scanning saved keyframes.
+        self.declare_parameter('semantic_discovery_max_keyframes', 1)
+        self.declare_parameter('semantic_discovery_search_timeout', 25.0)
 
         self.inference_url = self.get_parameter('inference_server_url').value
         self.bt_output_dir = Path(self.get_parameter('bt_output_dir').value)
@@ -111,6 +89,30 @@ class BTInterfaceNode(Node):
         self.feedback_rate = self.get_parameter('feedback_rate').value
         self.nav_action_name = self.get_parameter('nav_action').value
         self.nav_server_wait_timeout = self.get_parameter('nav_server_wait_timeout').value
+        self.semantic_resolver_service = self.get_parameter(
+            'semantic_resolver_service'
+        ).value
+        self.semantic_queue_timeout = float(
+            self.get_parameter('semantic_queue_timeout').value
+        )
+        self.semantic_queue_poll_period = float(
+            self.get_parameter('semantic_queue_poll_period').value
+        )
+        self.semantic_resolver_call_timeout = float(
+            self.get_parameter('semantic_resolver_call_timeout').value
+        )
+        self.semantic_discovery_service = self.get_parameter(
+            'semantic_discovery_service'
+        ).value
+        self.semantic_discovery_call_timeout = float(
+            self.get_parameter('semantic_discovery_call_timeout').value
+        )
+        self.semantic_discovery_max_keyframes = int(
+            self.get_parameter('semantic_discovery_max_keyframes').value
+        )
+        self.semantic_discovery_search_timeout = float(
+            self.get_parameter('semantic_discovery_search_timeout').value
+        )
 
         self.bt_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -121,6 +123,65 @@ class BTInterfaceNode(Node):
         self.active_client_goal_handle = None
         self.is_executing = False
         self.last_bt_xml = None
+        self._known_entities = ''
+
+    @staticmethod
+    def _set_future_result_if_pending(future: Future, result) -> None:
+        """Complete a ROS future safely when service and timeout race."""
+        try:
+            if not future.done():
+                future.set_result(result)
+        except RuntimeError:
+            # The competing completion won after the done() check.
+            pass
+
+    async def _wait_for_rclpy_future(self, future: Future, timeout: float):
+        """Await a ROS future with a wall-clock timeout.
+
+        rclpy advances action-server coroutines itself; there is no asyncio
+        event loop, so asyncio.wait_for cannot be used here.
+        """
+        completion = Future(executor=self.executor)
+
+        def service_finished(done_future: Future) -> None:
+            self._set_future_result_if_pending(
+                completion,
+                ('service', done_future),
+            )
+
+        timer = threading.Timer(
+            timeout,
+            lambda: self._set_future_result_if_pending(
+                completion,
+                ('timeout', None),
+            ),
+        )
+        timer.daemon = True
+        future.add_done_callback(service_finished)
+        timer.start()
+        try:
+            outcome, completed_future = await completion
+        finally:
+            timer.cancel()
+
+        if outcome == 'timeout':
+            future.cancel()
+            raise TimeoutError
+        return completed_future.result()
+
+    async def _wall_sleep(self, duration: float) -> None:
+        """Yield an rclpy coroutine for a bounded amount of wall time."""
+        completion = Future(executor=self.executor)
+        timer = threading.Timer(
+            duration,
+            lambda: self._set_future_result_if_pending(completion, None),
+        )
+        timer.daemon = True
+        timer.start()
+        try:
+            await completion
+        finally:
+            timer.cancel()
 
     def _setup_interfaces(self):
         """Setup ROS interfaces: publishers, subscribers, action servers/clients, services"""
@@ -161,6 +222,16 @@ class BTInterfaceNode(Node):
             self, GenerateAndExecuteBT, '/generate_and_execute_bt',
             callback_group=self.action_callback_group
         )
+        self._semantic_resolver_client = self.create_client(
+            ResolveSemanticNavigation,
+            self.semantic_resolver_service,
+            callback_group=self.action_callback_group,
+        )
+        self._semantic_discovery_client = self.create_client(
+            DiscoverSemanticObject,
+            self.semantic_discovery_service,
+            callback_group=self.action_callback_group,
+        )
 
         self._emergency_stop_srv = self.create_service(
             Trigger, '/emergency_stop_bt', self.emergency_stop_callback
@@ -175,12 +246,116 @@ class BTInterfaceNode(Node):
         self._command_subscriber = self.create_subscription(
             String, '/btgen_nl_command', self.command_topic_callback, qos_profile
         )
+        self._known_entities_subscriber = self.create_subscription(
+            String,
+            '/hydra/known_entities',
+            self._known_entities_callback,
+            qos_latched,
+        )
 
     def _log_configuration(self):
         self.get_logger().info(f'BT output directory: {self.bt_output_dir}')
         self.get_logger().info(f'Inference server URL: {self.inference_url}')
         self.get_logger().info(f'Navigation action target: {self.nav_action_name}')
+        self.get_logger().info(
+            f'Semantic resolver: {self.semantic_resolver_service}'
+        )
         self.get_logger().info('BT Interface Node initialized')
+
+    def _known_entities_callback(self, msg: String):
+        self._known_entities = msg.data
+
+    @staticmethod
+    def _semantic_label_similarity(query: str, candidate: str) -> float:
+        def normalize(value: str) -> str:
+            value = value.strip().lower().replace('_', ' ').replace('-', ' ')
+            value = re.sub(r'^(?:the|a|an)\s+', '', value)
+            return re.sub(r'\s+', ' ', value)
+
+        query = normalize(query)
+        candidate = normalize(candidate)
+        if not query or not candidate:
+            return 0.0
+        if query == candidate:
+            return 1.0
+        if query in candidate or candidate in query:
+            return 0.88
+        query_tokens = set(query.split())
+        candidate_tokens = set(candidate.split())
+        token_score = (
+            len(query_tokens & candidate_tokens)
+            / max(len(query_tokens), len(candidate_tokens))
+        )
+        return max(
+            0.85 * SequenceMatcher(None, query, candidate).ratio(),
+            token_score,
+        )
+
+    def _ground_generated_semantic_types(self, xml_string: str) -> str:
+        """Correct room/object layer selection using the live Hydra inventory."""
+        try:
+            context = json.loads(self._known_entities)
+        except (TypeError, json.JSONDecodeError):
+            return xml_string
+        if not isinstance(context, dict) or not context.get('ready'):
+            return xml_string
+
+        rooms = [str(value) for value in context.get('rooms', [])]
+        objects = [str(value) for value in context.get('objects', [])]
+        try:
+            root = ET.fromstring(xml_string)
+        except ET.ParseError:
+            return xml_string
+
+        changed = False
+        for element in root.iter():
+            if self._semantic_node_id(element) != 'NavigateSemantic':
+                continue
+            reference = element.get('entity_ref', '')
+            current_type, separator, label = reference.partition(':')
+            if not separator:
+                label = reference
+            room_score = max(
+                (
+                    self._semantic_label_similarity(label, candidate)
+                    for candidate in rooms
+                ),
+                default=0.0,
+            )
+            object_score = max(
+                (
+                    self._semantic_label_similarity(label, candidate)
+                    for candidate in objects
+                ),
+                default=0.0,
+            )
+            threshold = 0.72
+            if room_score >= threshold and room_score > object_score + 0.04:
+                grounded_type = 'room'
+            elif object_score >= threshold and object_score > room_score + 0.04:
+                grounded_type = 'object'
+            elif room_score >= threshold and object_score < threshold:
+                grounded_type = 'room'
+            elif object_score >= threshold and room_score < threshold:
+                grounded_type = 'object'
+            else:
+                grounded_type = 'object'
+
+            grounded_reference = f'{grounded_type}:{label.strip()}'
+            if (
+                grounded_reference != reference
+                or element.get('entity_type') != grounded_type
+            ):
+                self.get_logger().info(
+                    f'Grounded semantic reference {reference!r} as '
+                    f'{grounded_reference!r} '
+                    f'(room={room_score:.2f}, object={object_score:.2f})'
+                )
+                element.set('entity_ref', grounded_reference)
+                element.set('entity_type', grounded_type)
+                changed = True
+
+        return ET.tostring(root, encoding='unicode') if changed else xml_string
 
     def goal_callback(self, goal_request):
         self.get_logger().info(f'Received goal request: {goal_request.command}')
@@ -224,6 +399,33 @@ class BTInterfaceNode(Node):
                 goal_handle.abort()
                 return result
 
+            self.publish_feedback(
+                goal_handle,
+                'grounding',
+                0.25,
+                'Resolving semantic actions through Hydra...',
+            )
+            bt_xml, compile_error = await self.compile_semantic_actions(
+                bt_xml,
+                goal_handle,
+            )
+            if bt_xml is None:
+                result.error_message = (
+                    f'Semantic navigation resolution failed: {compile_error}'
+                )
+                self.get_logger().error(result.error_message)
+                self.publish_feedback(
+                    goal_handle,
+                    'failed',
+                    1.0,
+                    result.error_message,
+                )
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                else:
+                    goal_handle.abort()
+                return result
+
             self.publish_feedback(goal_handle, 'validating', 0.3, 'Validating generated BT...')
             is_valid, val_error = self.validate_bt_xml(bt_xml)
             if not is_valid:
@@ -234,11 +436,6 @@ class BTInterfaceNode(Node):
                 return result
 
             self.publish_feedback(goal_handle, 'validating', 0.4, 'Writing BT to file...')
-
-            # Resolve any remaining bare semantic room names against the TIAGo
-            # WAYPOINTS table. Metric goals from curated routes / the
-            # semantic_navigation envelope already contain ';' and are skipped.
-            bt_xml = self.resolve_semantic_waypoints(bt_xml)
 
             bt_file_path = self.write_bt_file(bt_xml)
             result.bt_xml_path = str(bt_file_path)
@@ -284,46 +481,6 @@ class BTInterfaceNode(Node):
                 self.current_goal_handle = None
 
         return result
-
-    def _normalize_room_label(self, room_label: str) -> str:
-        normalized = re.sub(r'\s+', ' ', room_label.strip().lower())
-        return ROOM_ALIASES.get(normalized, normalized)
-
-    def _extract_curated_room(self, command: str) -> Optional[str]:
-        normalized_command = re.sub(r'\s+', ' ', command.strip().lower())
-        match = re.search(r'\bgo to(?: the)? ([a-z\- ]+?)(?: and | then |$)', normalized_command)
-        if not match:
-            return None
-        return self._normalize_room_label(match.group(1))
-
-    def _build_curated_room_bt(self, room_name: str, command: str) -> str:
-        route = CURATED_ROOM_ROUTES[room_name]
-        include_wait = 'wait for further instructions' in command.lower()
-
-        sequence_lines = ['      <Sequence name="RoomNavigation">']
-        for index, pose in enumerate(route, start=1):
-            pose_value = self._pose_to_bt_string(pose)
-            path_key = f'{{path_{index}}}'
-            sequence_lines.append(
-                f'        <ComputePathToPose goal="{pose_value}" path="{path_key}" planner_id="GridBased"/>'
-            )
-            sequence_lines.append(
-                f'        <FollowPath path="{path_key}" controller_id="FollowPath"/>'
-            )
-
-        if include_wait:
-            sequence_lines.append('        <Wait wait_duration="3.0"/>')
-
-        sequence_lines.append('      </Sequence>')
-
-        xml_lines = [
-            '<root BTCPP_format="4" main_tree_to_execute="MainTree">',
-            '  <BehaviorTree ID="MainTree">',
-            *sequence_lines,
-            '  </BehaviorTree>',
-            '</root>',
-        ]
-        return '\n'.join(xml_lines)
 
     def _parse_semantic_navigation_command(self, command: str) -> Optional[dict]:
         try:
@@ -523,7 +680,7 @@ class BTInterfaceNode(Node):
                 json={
                     'command': command,
                     'max_tokens': 1024,
-                    'temperature': 0.1,
+                    'temperature': 0.0,
                     'prompt_format': 'alpaca',
                     'use_query_rewriting': False,
                     'rewritten_input': rewritten_input,
@@ -584,20 +741,16 @@ class BTInterfaceNode(Node):
         if semantic_payload:
             return await self.generate_bt_from_semantic_navigation(semantic_payload)
 
-        curated_room = self._extract_curated_room(command)
-        if curated_room in CURATED_ROOM_ROUTES:
-            self.get_logger().info(f'Using curated room navigation BT for: {curated_room}')
-            return self._build_curated_room_bt(curated_room, command), None
-
         try:
             response = requests.post(
                 f'{self.inference_url}/generate_bt',
                 json={
                     'command': command,
                     'max_tokens': 1024,
-                    'temperature': 0.1,
+                    'temperature': 0.0,
                     'prompt_format': 'alpaca',
-                    'use_query_rewriting': True
+                    'use_query_rewriting': True,
+                    'scene_graph_context': self._known_entities or None,
                 },
                 timeout=self.generation_timeout
             )
@@ -606,13 +759,355 @@ class BTInterfaceNode(Node):
             data = response.json()
             if not data.get('success', False):
                 return None, data.get('error', 'Unknown error')
-            return data.get('bt_xml'), None
+            bt_xml = data.get('bt_xml')
+            if bt_xml:
+                bt_xml = self._ground_generated_semantic_types(bt_xml)
+            return bt_xml, None
         except requests.Timeout:
             return None, 'Inference server timeout'
         except requests.ConnectionError:
             return None, 'Could not connect to inference server'
         except Exception as e:
             return None, f'Request failed: {str(e)}'
+
+    @staticmethod
+    def _semantic_node_id(element: ET.Element) -> str:
+        if element.tag == 'Action':
+            return element.get('ID', '')
+        return element.tag
+
+    @staticmethod
+    def _pose_message_to_bt_string(pose_stamped) -> str:
+        pose = pose_stamped.pose
+        frame_id = pose_stamped.header.frame_id or 'map'
+        return (
+            f'0;{frame_id};'
+            f'{pose.position.x:.9g};{pose.position.y:.9g};{pose.position.z:.9g};'
+            f'{pose.orientation.x:.9g};{pose.orientation.y:.9g};'
+            f'{pose.orientation.z:.9g};{pose.orientation.w:.9g}'
+        )
+
+    @staticmethod
+    def _replace_child(
+        parent: ET.Element,
+        old_child: ET.Element,
+        new_child: ET.Element,
+    ) -> None:
+        children = list(parent)
+        index = children.index(old_child)
+        parent.remove(old_child)
+        parent.insert(index, new_child)
+
+    def _compile_resolved_semantic_node(
+        self,
+        semantic_node: ET.Element,
+        response,
+        route_index: int,
+    ) -> ET.Element:
+        destination = response.destination_label or semantic_node.get(
+            'entity_ref', 'destination'
+        )
+        sequence = ET.Element(
+            'Sequence',
+            {
+                'name': f'Navigate to remembered {destination}',
+                '_semantic_destination_id': response.destination_id,
+                '_semantic_graph_version': str(response.graph_version),
+            },
+        )
+        for waypoint_index, waypoint in enumerate(response.waypoints, start=1):
+            path_key = f'{{semantic_path_{route_index}_{waypoint_index}}}'
+            goal = self._pose_message_to_bt_string(waypoint)
+            ET.SubElement(
+                sequence,
+                'ComputePathToPose',
+                {
+                    'name': f'Plan semantic route {route_index}.{waypoint_index}',
+                    'goal': goal,
+                    'path': path_key,
+                    'planner_id': 'GridBased',
+                },
+            )
+            ET.SubElement(
+                sequence,
+                'FollowPath',
+                {
+                    'name': f'Follow semantic route {route_index}.{waypoint_index}',
+                    'path': path_key,
+                    'controller_id': 'FollowPath',
+                },
+            )
+        return sequence
+
+    async def _resolve_semantic_node(
+        self,
+        semantic_node: ET.Element,
+        goal_handle,
+        queue_deadline: float,
+    ):
+        entity_ref = semantic_node.get('entity_ref', '').strip()
+        if not entity_ref:
+            return None, 'NavigateSemantic is missing required entity_ref'
+
+        last_queue_message = ''
+        discovery_attempted = False
+        discovery_resolution_deadline = 0.0
+        while time.monotonic() < queue_deadline:
+            if goal_handle.is_cancel_requested:
+                return None, 'PREEMPTED'
+
+            if not self._semantic_resolver_client.service_is_ready():
+                queue_message = (
+                    f'Waiting for the Hydra adapter before resolving {entity_ref}'
+                )
+            else:
+                request = ResolveSemanticNavigation.Request()
+                request.entity_ref = entity_ref
+                ref_type = (
+                    entity_ref.split(':', 1)[0].strip().lower()
+                    if ':' in entity_ref
+                    else ''
+                )
+                request.entity_type = (
+                    ref_type
+                    if ref_type in {'room', 'object'}
+                    else semantic_node.get('entity_type', '')
+                )
+                request.label = semantic_node.get('label', '')
+                request.preferred_id = semantic_node.get('preferred_id', '')
+                request.allow_stale = (
+                    semantic_node.get('allow_stale', 'false').lower() == 'true'
+                )
+                try:
+                    response = await self._wait_for_rclpy_future(
+                        self._semantic_resolver_client.call_async(request),
+                        self.semantic_resolver_call_timeout,
+                    )
+                except TimeoutError:
+                    queue_message = (
+                        f'Hydra resolver timed out after '
+                        f'{self.semantic_resolver_call_timeout:.0f}s for '
+                        f'{entity_ref}'
+                    )
+                except Exception as exc:
+                    queue_message = (
+                        f'Hydra resolver call failed for {entity_ref}: {exc}'
+                    )
+                else:
+                    if response.success:
+                        if not response.waypoints:
+                            return None, (
+                                f'Hydra resolved {entity_ref} without navigation '
+                                'waypoints'
+                            )
+                        return response, None
+                    fallback_statuses = {
+                        ResolveSemanticNavigation.Request.STATUS_UNKNOWN_DESTINATION,
+                        ResolveSemanticNavigation.Request.STATUS_STALE_DESTINATION,
+                    }
+                    is_object_fallback = (
+                        response.status in fallback_statuses
+                        and entity_ref.lower().startswith('object:')
+                    )
+                    if (
+                        is_object_fallback
+                        and not discovery_attempted
+                        and not self._semantic_discovery_client.service_is_ready()
+                    ):
+                        queue_message = (
+                            'Waiting for the single-view detector before checking '
+                            f'{entity_ref}'
+                        )
+                    elif is_object_fallback and not discovery_attempted:
+                        discovery_attempted = True
+                        discovery_request = DiscoverSemanticObject.Request()
+                        discovery_request.label = entity_ref.split(':', 1)[1]
+                        discovery_request.box_threshold = 0.45
+                        discovery_request.max_keyframes = 1
+                        discovery_request.max_duration_sec = min(
+                            self.semantic_discovery_search_timeout,
+                            max(0.0, self.semantic_discovery_call_timeout - 5.0),
+                        )
+                        discovery_request.max_observations = 1
+                        self.publish_feedback(
+                            goal_handle,
+                            'grounding',
+                            0.25,
+                            f'Checking the current camera view once for {entity_ref}',
+                        )
+                        try:
+                            discovery = await self._wait_for_rclpy_future(
+                                self._semantic_discovery_client.call_async(
+                                    discovery_request
+                                ),
+                                self.semantic_discovery_call_timeout,
+                            )
+                        except TimeoutError:
+                            return None, (
+                                f'free-text discovery timed out after '
+                                f'{self.semantic_discovery_call_timeout:.0f}s '
+                                f'for {entity_ref}'
+                            )
+                        if not discovery.success:
+                            return None, (
+                                discovery.error_message
+                                or response.error_message
+                            )
+                        if discovery.detected_pose.header.frame_id:
+                            semantic_node.set(
+                                '_live_object_pose',
+                                self._pose_message_to_bt_string(
+                                    discovery.detected_pose
+                                ),
+                            )
+                        self.get_logger().info(
+                            f'Added one live-view observation for {entity_ref}'
+                        )
+                        # Bound the cross-container DDS handoff by observing
+                        # actual resolver success, not by assuming a latency.
+                        discovery_resolution_deadline = time.monotonic() + 5.0
+                        await self._wall_sleep(0.1)
+                        continue
+                    elif (
+                        is_object_fallback
+                        and discovery_attempted
+                        and time.monotonic() < discovery_resolution_deadline
+                    ):
+                        queue_message = (
+                            'Waiting for Hydra to index the live observation for '
+                            f'{entity_ref}'
+                        )
+                    elif (
+                        response.status
+                        != ResolveSemanticNavigation.Request.STATUS_GRAPH_NOT_READY
+                    ):
+                        return None, (
+                            response.error_message
+                            or f'could not resolve {entity_ref}'
+                        )
+                    else:
+                        queue_message = (
+                            response.error_message
+                            or f'Hydra is still mapping before resolving {entity_ref}'
+                        )
+
+            if queue_message != last_queue_message:
+                self.get_logger().info(
+                    f'Queued semantic command: {queue_message}'
+                )
+                last_queue_message = queue_message
+            remaining = max(0.0, queue_deadline - time.monotonic())
+            self.publish_feedback(
+                goal_handle,
+                'queued',
+                0.25,
+                f'{queue_message}; waiting up to {remaining:.0f}s',
+            )
+            await self._wall_sleep(self.semantic_queue_poll_period)
+
+        return None, (
+            f'timed out after {self.semantic_queue_timeout:.0f}s waiting for '
+            f'Hydra to resolve {entity_ref}'
+        )
+
+    async def compile_semantic_actions(
+        self,
+        xml_string: str,
+        goal_handle,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Compile model-level semantic actions into executable Nav2 actions.
+
+        ``NavigateSemantic`` deliberately is not a BehaviorTree.CPP plugin. It is
+        a constrained-generation token whose entity reference is resolved against
+        the official Hydra DSG immediately before execution.
+        """
+        try:
+            root = ET.fromstring(xml_string)
+        except ET.ParseError as exc:
+            return None, f'invalid generated XML: {exc}'
+
+        semantic_nodes: list[tuple[ET.Element, ET.Element]] = []
+        for parent in root.iter():
+            for child in list(parent):
+                if self._semantic_node_id(child) == 'NavigateSemantic':
+                    semantic_nodes.append((parent, child))
+
+        if not semantic_nodes:
+            return xml_string, None
+
+        queue_deadline = time.monotonic() + self.semantic_queue_timeout
+        for route_index, (parent, semantic_node) in enumerate(
+            semantic_nodes,
+            start=1,
+        ):
+            response, error = await self._resolve_semantic_node(
+                semantic_node,
+                goal_handle,
+                queue_deadline,
+            )
+            if response is None:
+                return None, error
+            live_object_pose = semantic_node.attrib.pop(
+                '_live_object_pose',
+                '',
+            )
+            if live_object_pose:
+                document_order = list(root.iter())
+                semantic_index = document_order.index(semantic_node)
+                for candidate in document_order[semantic_index + 1:]:
+                    candidate_id = (
+                        candidate.get('ID')
+                        if candidate.tag == 'Action'
+                        else candidate.tag
+                    )
+                    if candidate_id == 'NavigateSemantic':
+                        break
+                    if candidate_id == 'PickObject':
+                        candidate.set('object_pose', live_object_pose)
+                        self.get_logger().info(
+                            'Reusing the live navigation-fallback pose for '
+                            'PickObject; no second detection will run'
+                        )
+                        break
+            if (
+                response.entity_type == 'object'
+                and response.destination_pose.header.frame_id
+            ):
+                document_order = list(root.iter())
+                semantic_index = document_order.index(semantic_node)
+                for candidate in document_order[semantic_index + 1:]:
+                    candidate_id = (
+                        candidate.get('ID')
+                        if candidate.tag == 'Action'
+                        else candidate.tag
+                    )
+                    if candidate_id == 'NavigateSemantic':
+                        break
+                    if candidate_id == 'PlaceObject':
+                        candidate.set(
+                            'place_pose',
+                            self._pose_message_to_bt_string(
+                                response.destination_pose
+                            ),
+                        )
+                        self.get_logger().info(
+                            'Using Hydra support geometry for PlaceObject; '
+                            'no close-range detection will run'
+                        )
+                        break
+            compiled = self._compile_resolved_semantic_node(
+                semantic_node,
+                response,
+                route_index,
+            )
+            self._replace_child(parent, semantic_node, compiled)
+            self.get_logger().info(
+                f'Compiled {semantic_node.get("entity_ref")} via Hydra '
+                f'node {response.destination_id} into '
+                f'{len(response.waypoints)} Nav2 waypoint(s)'
+            )
+
+        return ET.tostring(root, encoding='unicode'), None
 
     def validate_bt_xml(self, xml_string: str) -> tuple[bool, Optional[str]]:
         try:
@@ -623,28 +1118,6 @@ class BTInterfaceNode(Node):
             return True, None
         except Exception as e:
             return False, f'Validation error: {str(e)}'
-
-    def resolve_semantic_waypoints(self, xml_string: str) -> str:
-        """Replace bare semantic room names in ComputePathToPose/NavigateToPose
-        goals with the metric coordinate strings from WAYPOINTS. Leaves metric
-        goals (containing ';' or ',') untouched. This is the TIAGo-world fallback
-        resolver; curated routes and the semantic_navigation envelope are handled
-        upstream of this pass."""
-        try:
-            root = ET.fromstring(xml_string)
-            for action in root.findall(".//Action"):
-                if action.get("ID") in ("NavigateToPose", "ComputePathToPose"):
-                    goal = action.get("goal")
-                    if goal and ";" not in goal and "," not in goal:
-                        goal_lower = goal.lower().strip()
-                        if goal_lower in WAYPOINTS:
-                            self.get_logger().info(
-                                f"Resolved waypoint '{goal}' to '{WAYPOINTS[goal_lower]}'"
-                            )
-                            action.set("goal", WAYPOINTS[goal_lower])
-            return ET.tostring(root, encoding='unicode', xml_declaration=True)
-        except ET.ParseError:
-            return xml_string
 
     def add_uids_for_foxglove(self, xml_string: str) -> str:
         """Add unique _uid attributes to all nodes for Foxglove Polymath BT panel visualization.
@@ -722,7 +1195,7 @@ class BTInterfaceNode(Node):
         file_path.chmod(0o644)
         return file_path
 
-    def _extract_final_nav_pose_from_bt(self, bt_file_path: Path) -> Optional[dict]:
+    def _extract_initial_nav_pose_from_bt(self, bt_file_path: Path) -> Optional[dict]:
         try:
             root = ET.parse(bt_file_path).getroot()
         except Exception as e:
@@ -738,10 +1211,10 @@ class BTInterfaceNode(Node):
         if not compute_goals:
             return None
 
-        final_goal = compute_goals[-1]
-        parts = final_goal.split(';')
+        initial_goal = compute_goals[0]
+        parts = initial_goal.split(';')
         if len(parts) != 9:
-            self.get_logger().warn(f'Unexpected BT goal format: {final_goal}')
+            self.get_logger().warn(f'Unexpected BT goal format: {initial_goal}')
             return None
 
         try:
@@ -774,20 +1247,20 @@ class BTInterfaceNode(Node):
             # Dynamic object tasks compute their real goal inside the BT. Keep
             # the mandatory action-level placeholder a valid planar pose.
             nav_goal.pose.pose.orientation.w = 1.0
-            final_pose = self._extract_final_nav_pose_from_bt(bt_file_path)
-            if final_pose:
-                nav_goal.pose.header.frame_id = final_pose['frame_id']
-                nav_goal.pose.pose.position.x = final_pose['x']
-                nav_goal.pose.pose.position.y = final_pose['y']
-                nav_goal.pose.pose.position.z = final_pose['z']
-                nav_goal.pose.pose.orientation.x = final_pose['qx']
-                nav_goal.pose.pose.orientation.y = final_pose['qy']
-                nav_goal.pose.pose.orientation.z = final_pose['qz']
-                nav_goal.pose.pose.orientation.w = final_pose['qw']
+            initial_pose = self._extract_initial_nav_pose_from_bt(bt_file_path)
+            if initial_pose:
+                nav_goal.pose.header.frame_id = initial_pose['frame_id']
+                nav_goal.pose.pose.position.x = initial_pose['x']
+                nav_goal.pose.pose.position.y = initial_pose['y']
+                nav_goal.pose.pose.position.z = initial_pose['z']
+                nav_goal.pose.pose.orientation.x = initial_pose['qx']
+                nav_goal.pose.pose.orientation.y = initial_pose['qy']
+                nav_goal.pose.pose.orientation.z = initial_pose['qz']
+                nav_goal.pose.pose.orientation.w = initial_pose['qw']
                 self.get_logger().info(
-                    'Using final BT waypoint as Nav2 action goal: '
-                    f'{final_pose["frame_id"]} '
-                    f'({final_pose["x"]:.2f}, {final_pose["y"]:.2f})'
+                    'Using initial BT waypoint as Nav2 action goal: '
+                    f'{initial_pose["frame_id"]} '
+                    f'({initial_pose["x"]:.2f}, {initial_pose["y"]:.2f})'
                 )
             
             send_goal_future = self._nav_client.send_goal_async(nav_goal)
@@ -795,8 +1268,13 @@ class BTInterfaceNode(Node):
             while not send_goal_future.done() and (time.time() - start_wait) < 10.0:
                 time.sleep(0.05)
 
+            if not send_goal_future.done():
+                return False, 'Timed out waiting for Nav2 to accept the BT goal'
             self.current_nav_goal_handle = send_goal_future.result()
-            if not self.current_nav_goal_handle.accepted:
+            if (
+                self.current_nav_goal_handle is None
+                or not self.current_nav_goal_handle.accepted
+            ):
                 return False, 'Navigation goal rejected by Nav2'
 
             get_result_future = self.current_nav_goal_handle.get_result_async()
@@ -936,7 +1414,8 @@ def main(args=None):
     except KeyboardInterrupt: pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

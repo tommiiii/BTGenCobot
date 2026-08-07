@@ -1,0 +1,12 @@
+room_aliases:
+  livingroom: living room
+  lounge: living room
+  cooking area: kitchen
+  sleeping area: bedroom
+
+room_evidence:
+  kitchen: [appliance, refrigerator, oven, microwave, stove, sink, counter, food]
+  bedroom: [bed, pillow, wardrobe, clothes]
+  living room: [seating, sofa, couch, television, coffee table]
+  bathroom: [toilet, bathtub, shower, sink]
+  dining room: [dining table, table, chair, food]

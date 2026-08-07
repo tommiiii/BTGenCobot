@@ -6,6 +6,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_srvs/srv/empty.hpp>
 #include <control_msgs/action/follow_joint_trajectory.hpp>
+#include <algorithm>
 
 using namespace std::placeholders;
 using namespace std::chrono_literals;
@@ -16,6 +17,9 @@ public:
   ManipulatorService(const rclcpp::NodeOptions & options = rclcpp::NodeOptions())
   : Node("manipulator_service", options)
   {
+    this->declare_parameter("pick_transport_tool_height", 0.90);
+    this->declare_parameter("pick_lift_velocity_scale", 0.20);
+
     // Create a reentrant callback group so service callbacks and action clients don't deadlock
     callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
 
@@ -37,6 +41,12 @@ public:
   void initialize_moveit(std::shared_ptr<rclcpp::Node> shared_this)
   {
     move_group_arm_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(shared_this, "arm_torso");
+    if (!move_group_arm_->setEndEffectorLink("arm_tool_link")) {
+      throw std::runtime_error("arm_tool_link is not available in the arm_torso MoveIt group");
+    }
+    RCLCPP_INFO(
+      this->get_logger(), "MoveIt end-effector link: %s",
+      move_group_arm_->getEndEffectorLink().c_str());
         // TIAGo MoveIt config usually has higher velocity scaling
     move_group_arm_->setMaxVelocityScalingFactor(1.0);
     move_group_arm_->setMaxAccelerationScalingFactor(1.0);
@@ -52,7 +62,7 @@ private:
   
   // Gripper settings
   const double GRIPPER_OPEN = 0.044;
-  const double GRIPPER_CLOSED = 0.0;
+  const double GRIPPER_CLOSED = -0.001;
 
   void handle_request(
     const std::shared_ptr<btgencobot_interfaces::srv::ManipulatorAction::Request> request,
@@ -126,12 +136,15 @@ private:
     }
 
     // Calculate poses
-    const double finger_length = 0.15;
+    // Exact URDF transform from arm_tool_link to gripper_grasping_frame.
+    const double finger_length = 0.151;
     geometry_msgs::msg::PoseStamped grasp_pose = target_pose;
-    // We command arm_tool_link, which is 'finger_length' higher than the gripper tip.
-    // The arm kinematics cannot physically reach lower than Z=0.219 at this extension.
-    // So we target Z = object_Z + finger_length + 0.01 (to be safely reachable).
-    grasp_pose.pose.position.z = target_pose.pose.position.z + 0.01 + finger_length;
+    // We command arm_tool_link, which is 'finger_length' higher than the
+    // gripper tip. Preserve the measured object height, except for the model's
+    // 0.22 m reachable tool-height floor.
+    grasp_pose.pose.position.z = std::max(
+      target_pose.pose.position.z + 0.01 + finger_length,
+      0.22);
     // Orientation for arm_tool_link to make gripper point DOWN:
     // X_arm=UP, Z_arm=FORWARD => q=[0, 0.707, 0, 0.707]
     grasp_pose.pose.orientation.x = 0.0;
@@ -140,7 +153,10 @@ private:
     grasp_pose.pose.orientation.w = 0.70710678;
 
     geometry_msgs::msg::PoseStamped above_pose = grasp_pose;
-    above_pose.pose.position.z += 0.20; // 20cm above grasp pose
+    // The downward-facing IK is unreliable below about 0.45 m at the ball's
+    // manipulation standoff. Only the staging pose needs this clearance; the
+    // final grasp must remain tied to the measured object height.
+    above_pose.pose.position.z = std::max(grasp_pose.pose.position.z + 0.20, 0.45);
 
     // 1. Move to above pose (free space)
     RCLCPP_INFO(this->get_logger(), "Planning path to above pose...");
@@ -208,7 +224,13 @@ private:
     RCLCPP_INFO(this->get_logger(), "Lifting object...");
     sanitize_start_state();
     geometry_msgs::msg::PoseStamped lift_pose = grasp_pose;
-    lift_pose.pose.position.z += 0.15;
+    lift_pose.pose.position.z = std::max(
+      grasp_pose.pose.position.z + 0.15,
+      this->get_parameter("pick_transport_tool_height").as_double());
+    const double lift_scale = std::clamp(
+      this->get_parameter("pick_lift_velocity_scale").as_double(), 0.05, 1.0);
+    move_group_arm_->setMaxVelocityScalingFactor(lift_scale);
+    move_group_arm_->setMaxAccelerationScalingFactor(lift_scale);
     std::vector<geometry_msgs::msg::Pose> up_waypoints;
     up_waypoints.push_back(lift_pose.pose);
     
@@ -216,14 +238,27 @@ private:
     double lift_fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, up_trajectory);
     
     if (lift_fraction >= 0.9) {
-      move_group_arm_->execute(up_trajectory);
+      success = (
+        move_group_arm_->execute(up_trajectory) ==
+        moveit::core::MoveItErrorCode::SUCCESS);
     } else {
       RCLCPP_WARN(this->get_logger(), "Cartesian lift failed, using free space planning...");
       sanitize_start_state();
       move_group_arm_->setPoseTarget(lift_pose);
-      move_group_arm_->move();
+      success = (
+        move_group_arm_->move() == moveit::core::MoveItErrorCode::SUCCESS);
     }
-
+    if (!success) {
+      move_group_arm_->setMaxVelocityScalingFactor(1.0);
+      move_group_arm_->setMaxAccelerationScalingFactor(1.0);
+      RCLCPP_ERROR(this->get_logger(), "Failed to lift object after grasp");
+      return false;
+    }
+    move_group_arm_->setMaxVelocityScalingFactor(1.0);
+    move_group_arm_->setMaxAccelerationScalingFactor(1.0);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Object raised directly to transport clearance; preserving arm pose");
     return true;
   }
 
@@ -231,7 +266,7 @@ private:
   {
     if (!move_group_arm_) return false;
 
-    const double finger_length = 0.15;
+    const double finger_length = 0.151;
     geometry_msgs::msg::PoseStamped place_pose = target_pose;
     place_pose.pose.position.z += finger_length;
     place_pose.pose.orientation.x = 0.0;
@@ -277,11 +312,18 @@ private:
     double fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, up_trajectory);
     
     if (fraction >= 0.9) {
-      move_group_arm_->execute(up_trajectory);
+      success = (
+        move_group_arm_->execute(up_trajectory) ==
+        moveit::core::MoveItErrorCode::SUCCESS);
     } else {
       sanitize_start_state();
       move_group_arm_->setPoseTarget(above_pose);
-      move_group_arm_->move();
+      success = (
+        move_group_arm_->move() == moveit::core::MoveItErrorCode::SUCCESS);
+    }
+    if (!success) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to retreat after place");
+      return false;
     }
 
     return true;
