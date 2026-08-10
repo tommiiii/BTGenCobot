@@ -22,7 +22,10 @@ PlaceObject::PlaceObject(
   detection_sent_(false),
   detection_received_(false),
   place_sent_(false),
-  place_received_(false)
+  place_received_(false),
+  backup_sent_(false),
+  tuck_sent_(false),
+  tuck_received_(false)
 {
   if (!config.blackboard->get("node", node_) || !node_) {
     throw BT::RuntimeError("PlaceObject: 'node' not found in blackboard");
@@ -39,6 +42,7 @@ PlaceObject::PlaceObject(
     "/manipulator_action");
   head_client_ = rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
     service_node_, "/head_controller/follow_joint_trajectory");
+  backup_client_ = rclcpp_action::create_client<Backup>(service_node_, "/backup");
 
   auto camera_qos = rclcpp::QoS(10).reliability(rclcpp::ReliabilityPolicy::Reliable);
 
@@ -107,6 +111,13 @@ BT::NodeStatus PlaceObject::onStart()
   place_sent_ = false;
   place_received_ = false;
   place_response_.reset();
+  backup_goal_handle_.reset();
+  backup_goal_future_ = {};
+  backup_result_future_ = {};
+  backup_sent_ = false;
+  tuck_sent_ = false;
+  tuck_received_ = false;
+  tuck_response_.reset();
   latest_image_.reset();
   latest_depth_.reset();
   has_camera_info_ = false;
@@ -410,6 +421,22 @@ BT::NodeStatus PlaceObject::onRunning()
         return BT::NodeStatus::FAILURE;
       }
 
+      // Only the live graph-miss fallback tilted the head. Restore it while
+      // the manipulator places; normal Hydra-backed placement never moves the
+      // head at all.
+      head_goal_handle_.reset();
+      head_goal_future_ = {};
+      head_result_future_ = {};
+      if (sendHeadTiltGoalAsync(0.0, HEAD_TILT_DURATION, head_goal_future_)) {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "PlaceObject: restoring neutral head pose concurrently with place");
+      } else {
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "PlaceObject: could not start concurrent neutral head motion");
+      }
+
       state_ = PlaceState::PLACING;
       RCLCPP_INFO(
         node_->get_logger(),
@@ -471,9 +498,12 @@ BT::NodeStatus PlaceObject::onRunning()
       }
 
       if (place_response_->success) {
-        RCLCPP_INFO(node_->get_logger(), "PlaceObject: Place operation completed successfully");
-        state_ = PlaceState::DONE;
-        return BT::NodeStatus::SUCCESS;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "PlaceObject: place succeeded; backing away before arm tuck");
+        operation_start_time_ = node_->now();
+        state_ = PlaceState::BACKING_UP;
+        return BT::NodeStatus::RUNNING;
       } else {
         RCLCPP_ERROR(
           node_->get_logger(),
@@ -481,6 +511,112 @@ BT::NodeStatus PlaceObject::onRunning()
           place_response_->error_message.c_str());
         return BT::NodeStatus::FAILURE;
       }
+    }
+
+    case PlaceState::BACKING_UP:
+    {
+      if (!backup_sent_) {
+        if (!backup_client_->wait_for_action_server(1s)) {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "PlaceObject: Nav2 BackUp is unavailable; skipping arm tuck");
+          state_ = PlaceState::DONE;
+          return BT::NodeStatus::SUCCESS;
+        }
+
+        Backup::Goal goal;
+        goal.target.x = -BACKUP_DISTANCE;
+        goal.speed = BACKUP_SPEED;
+        goal.time_allowance = rclcpp::Duration::from_seconds(12.0);
+        backup_goal_future_ = backup_client_->async_send_goal(goal);
+        backup_sent_ = true;
+        operation_start_time_ = node_->now();
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "PlaceObject: requesting %.2f m collision-checked reverse",
+          BACKUP_DISTANCE);
+        return BT::NodeStatus::RUNNING;
+      }
+
+      if (!backup_goal_handle_) {
+        if (!backup_goal_future_.valid() ||
+            backup_goal_future_.wait_for(0s) != std::future_status::ready) {
+          return BT::NodeStatus::RUNNING;
+        }
+        backup_goal_handle_ = backup_goal_future_.get();
+        if (!backup_goal_handle_) {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "PlaceObject: reverse goal was rejected; skipping arm tuck");
+          state_ = PlaceState::DONE;
+          return BT::NodeStatus::SUCCESS;
+        }
+        backup_result_future_ = backup_client_->async_get_result(backup_goal_handle_);
+        return BT::NodeStatus::RUNNING;
+      }
+
+      if (!backup_result_future_.valid() ||
+          backup_result_future_.wait_for(0s) != std::future_status::ready) {
+        return BT::NodeStatus::RUNNING;
+      }
+
+      const auto result = backup_result_future_.get();
+      if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "PlaceObject: reverse was blocked or failed; skipping arm tuck");
+        state_ = PlaceState::DONE;
+        return BT::NodeStatus::SUCCESS;
+      }
+
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "PlaceObject: reverse completed; starting arm tuck");
+      state_ = PlaceState::TUCKING;
+      return BT::NodeStatus::RUNNING;
+    }
+
+    case PlaceState::TUCKING:
+    {
+      if (!tuck_sent_) {
+        if (!manipulator_client_->wait_for_service(1s)) {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "PlaceObject: manipulator service unavailable; skipping arm tuck");
+          state_ = PlaceState::DONE;
+          return BT::NodeStatus::SUCCESS;
+        }
+
+        auto request = std::make_shared<btgencobot_interfaces::srv::ManipulatorAction::Request>();
+        request->action_type = "tuck";
+        manipulator_client_->async_send_request(
+          request,
+          [this](rclcpp::Client<btgencobot_interfaces::srv::ManipulatorAction>::SharedFuture future) {
+            try {
+              tuck_response_ = future.get();
+              tuck_received_ = true;
+            } catch (const std::exception & e) {
+              RCLCPP_ERROR(node_->get_logger(), "PlaceObject: tuck service failed: %s", e.what());
+              tuck_received_ = true;
+            }
+          });
+        tuck_sent_ = true;
+        return BT::NodeStatus::RUNNING;
+      }
+
+      if (!tuck_received_) {
+        return BT::NodeStatus::RUNNING;
+      }
+
+      if (!tuck_response_ || !tuck_response_->success) {
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "PlaceObject: placement succeeded, but the arm tuck did not complete");
+      } else {
+        RCLCPP_INFO(node_->get_logger(), "PlaceObject: post-place arm tuck completed");
+      }
+      state_ = PlaceState::DONE;
+      return BT::NodeStatus::SUCCESS;
     }
 
     case PlaceState::DONE:
@@ -504,6 +640,16 @@ void PlaceObject::onHalted()
   place_sent_ = false;
   place_received_ = false;
   place_response_.reset();
+  if (backup_goal_handle_) {
+    backup_client_->async_cancel_goal(backup_goal_handle_);
+  }
+  backup_goal_handle_.reset();
+  backup_goal_future_ = {};
+  backup_result_future_ = {};
+  backup_sent_ = false;
+  tuck_sent_ = false;
+  tuck_received_ = false;
+  tuck_response_.reset();
 }
 
 void PlaceObject::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)

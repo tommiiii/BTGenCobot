@@ -6,6 +6,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_srvs/srv/empty.hpp>
 #include <control_msgs/action/follow_joint_trajectory.hpp>
+#include <play_motion2_msgs/action/play_motion2.hpp>
 #include <algorithm>
 #include <cmath>
 
@@ -23,7 +24,7 @@ public:
     // world is ~0.85 m high and arm_tool_link sits ~0.16 m above the grasp
     // frame, so 0.90 m lets the fingers hit the table edge.
     this->declare_parameter("pick_transport_tool_height", 1.15);
-    this->declare_parameter("pick_lift_velocity_scale", 0.20);
+    this->declare_parameter("pick_lift_velocity_scale", 0.35);
     this->declare_parameter("pick_approach_velocity_scale", 0.50);
     this->declare_parameter("pick_torso_speed", 0.05);
     this->declare_parameter("pick_grasp_clearance", 0.01);
@@ -47,6 +48,9 @@ public:
       this, "/gripper_controller/follow_joint_trajectory", callback_group_);
     torso_action_client_ = rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
       this, "/torso_controller/follow_joint_trajectory", callback_group_);
+    play_motion_action_client_ =
+      rclcpp_action::create_client<play_motion2_msgs::action::PlayMotion2>(
+      this, "/play_motion2", callback_group_);
       
     RCLCPP_INFO(this->get_logger(), "Manipulator service (MoveIt 2) ready.");
   }
@@ -82,6 +86,8 @@ private:
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_arm_only_;
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr gripper_action_client_;
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr torso_action_client_;
+  rclcpp_action::Client<play_motion2_msgs::action::PlayMotion2>::SharedPtr
+    play_motion_action_client_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   
   // Gripper settings
@@ -106,6 +112,8 @@ private:
         success = execute_pick(request->target_pose);
       } else if (action == "place") {
         success = execute_place(request->target_pose);
+      } else if (action == "tuck") {
+        success = tuck_arm_after_place();
       } else {
         response->success = false;
         response->error_message = "Unknown action type: " + action;
@@ -229,6 +237,49 @@ private:
       return false;
     }
     return result_future.get().code == rclcpp_action::ResultCode::SUCCEEDED;
+  }
+
+  bool tuck_arm_after_place()
+  {
+    if (!play_motion_action_client_->wait_for_action_server(std::chrono::seconds(3))) {
+      RCLCPP_ERROR(this->get_logger(), "play_motion2 is unavailable; arm was not tucked");
+      return false;
+    }
+
+    play_motion2_msgs::action::PlayMotion2::Goal goal;
+    goal.motion_name = "home";
+    goal.skip_planning = true;
+
+    RCLCPP_INFO(this->get_logger(), "Tucking arm with TIAGo home motion...");
+    auto goal_future = play_motion_action_client_->async_send_goal(goal);
+    if (goal_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+      RCLCPP_ERROR(this->get_logger(), "Timed out sending the arm tuck goal");
+      return false;
+    }
+    auto goal_handle = goal_future.get();
+    if (!goal_handle) {
+      RCLCPP_ERROR(this->get_logger(), "Arm tuck goal was rejected");
+      return false;
+    }
+
+    auto result_future = play_motion_action_client_->async_get_result(goal_handle);
+    if (result_future.wait_for(std::chrono::seconds(45)) != std::future_status::ready) {
+      RCLCPP_ERROR(this->get_logger(), "Arm tuck timed out");
+      play_motion_action_client_->async_cancel_goal(goal_handle);
+      return false;
+    }
+    const auto wrapped_result = result_future.get();
+    const bool succeeded =
+      wrapped_result.code == rclcpp_action::ResultCode::SUCCEEDED &&
+      wrapped_result.result && wrapped_result.result->error.empty();
+    if (!succeeded) {
+      RCLCPP_ERROR(
+        this->get_logger(), "Arm tuck failed: %s",
+        wrapped_result.result ? wrapped_result.result->error.c_str() : "no result");
+      return false;
+    }
+    RCLCPP_INFO(this->get_logger(), "Arm tucked after place");
+    return true;
   }
 
   bool reserve_torso_descent(double distance)

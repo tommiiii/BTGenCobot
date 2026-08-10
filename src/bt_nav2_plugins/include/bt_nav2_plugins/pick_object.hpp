@@ -28,7 +28,7 @@ namespace bt_nav2_plugins
  * 2. Capture fresh camera image for close-range detection
  * 3. Call /detect_object service for accurate pose estimation
  * 4. Call /manipulator_action service to execute pick
- * 5. Tilt head back to neutral
+ * 5. Return the head to neutral concurrently with manipulation
  *
  * Falls back to using the initial detection's cached pose if head control is unavailable.
  *
@@ -120,7 +120,6 @@ private:
     WAITING_FOR_IMAGE,
     DETECTING,
     PICKING,
-    RETURNING_HEAD,
     DONE
   };
   PickState state_;
@@ -134,7 +133,6 @@ private:
   static constexpr double HEAD_TILT_DOWN = -1.047;  // -60° (max down) in radians
   static constexpr double HEAD_TILT_NEUTRAL = 0.0;
   static constexpr double HEAD_TILT_DURATION = 2.0;  // seconds for trajectory
-  static constexpr double HEAD_TILT_TIMEOUT = 5.0;   // max wait for result
   static constexpr double POST_TILT_SETTLE_SEC = 1.0; // wait after tilt before accepting images
   static constexpr double MAX_MANIPULATION_DISTANCE = 0.95;
   rclcpp::Time head_settle_until_;                    // don't accept images before this time

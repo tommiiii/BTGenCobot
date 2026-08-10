@@ -13,6 +13,7 @@
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "control_msgs/action/follow_joint_trajectory.hpp"
+#include "nav2_msgs/action/back_up.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "btgencobot_interfaces/srv/manipulator_action.hpp"
@@ -38,6 +39,7 @@ namespace bt_nav2_plugins
  * 2. Calls /detect_object service to detect the place surface/location
  * 3. Computes place pose from detection result
  * 4. Calls /manipulator_action service to execute place
+ * 5. Uses Nav2 to back away before requesting the collision-sensitive arm tuck
  */
 class PlaceObject : public BT::StatefulActionNode
 {
@@ -95,6 +97,9 @@ private:
   rclcpp::Client<btgencobot_interfaces::srv::DetectObject>::SharedPtr detect_client_;
   rclcpp::Client<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr manipulator_client_;
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr head_client_;
+  using Backup = nav2_msgs::action::BackUp;
+  using BackupGoalHandle = rclcpp_action::ClientGoalHandle<Backup>;
+  rclcpp_action::Client<Backup>::SharedPtr backup_client_;
 
   // Subscriptions for camera data
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
@@ -119,6 +124,8 @@ private:
     WAITING_FOR_IMAGE,
     DETECTING,
     PLACING,
+    BACKING_UP,
+    TUCKING,
     DONE
   };
   PlaceState state_;
@@ -141,6 +148,17 @@ private:
   btgencobot_interfaces::srv::ManipulatorAction::Response::SharedPtr place_response_;
   std::atomic<bool> place_sent_;
   std::atomic<bool> place_received_;
+
+  // Collision-checked post-place cleanup state
+  BackupGoalHandle::SharedPtr backup_goal_handle_;
+  std::shared_future<BackupGoalHandle::SharedPtr> backup_goal_future_;
+  std::shared_future<BackupGoalHandle::WrappedResult> backup_result_future_;
+  std::atomic<bool> backup_sent_;
+  btgencobot_interfaces::srv::ManipulatorAction::Response::SharedPtr tuck_response_;
+  std::atomic<bool> tuck_sent_;
+  std::atomic<bool> tuck_received_;
+  static constexpr double BACKUP_DISTANCE = 0.35;
+  static constexpr double BACKUP_SPEED = 0.10;
 
   // Computed place pose
   geometry_msgs::msg::PoseStamped place_pose_;

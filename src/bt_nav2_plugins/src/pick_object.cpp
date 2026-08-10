@@ -394,6 +394,25 @@ BT::NodeStatus PickObject::onRunning()
           bp.pose.position.x, bp.pose.position.y, bp.pose.position.z);
       } catch (...) {}
 
+      // Detection no longer needs the downward camera view. Restore neutral
+      // now, while the manipulator opens and approaches, instead of serially
+      // waiting after the slow carry lift and delaying navigation.
+      if (head_tilt_done_) {
+        head_goal_handle_.reset();
+        head_goal_future_ = {};
+        head_result_future_ = {};
+        if (sendHeadTiltGoalAsync(
+              HEAD_TILT_NEUTRAL, HEAD_TILT_DURATION, head_goal_future_)) {
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "PickObject: restoring neutral head pose concurrently with pick");
+        } else {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "PickObject: could not start concurrent neutral head motion");
+        }
+      }
+
       state_ = PickState::PICKING;
       return BT::NodeStatus::RUNNING;
     }
@@ -447,51 +466,10 @@ BT::NodeStatus PickObject::onRunning()
       if (!pick_response_) return BT::NodeStatus::FAILURE;
 
       if (pick_response_->success) {
-        if (head_tilt_done_) {
-          head_goal_handle_.reset();
-          head_goal_future_ = {};
-          head_result_future_ = {};
-          operation_start_time_ = node_->now();
-          if (sendHeadTiltGoalAsync(
-                HEAD_TILT_NEUTRAL, HEAD_TILT_DURATION, head_goal_future_)) {
-            state_ = PickState::RETURNING_HEAD;
-            return BT::NodeStatus::RUNNING;
-          }
-        }
         state_ = PickState::DONE;
         return BT::NodeStatus::SUCCESS;
-      }
-      if (head_tilt_done_) {
-        std::shared_future<GoalHandle::SharedPtr> ignored;
-        sendHeadTiltGoalAsync(HEAD_TILT_NEUTRAL, HEAD_TILT_DURATION, ignored);
       }
       return BT::NodeStatus::FAILURE;
-    }
-
-    case PickState::RETURNING_HEAD:
-    {
-      if (!head_goal_handle_) {
-        if (head_goal_future_.valid() &&
-            head_goal_future_.wait_for(0s) == std::future_status::ready) {
-          head_goal_handle_ = head_goal_future_.get();
-          if (head_goal_handle_) {
-            head_result_future_ = head_client_->async_get_result(head_goal_handle_);
-          }
-        }
-      } else if (
-        head_result_future_.valid() &&
-        head_result_future_.wait_for(0s) == std::future_status::ready)
-      {
-        head_result_future_.get();
-        state_ = PickState::DONE;
-        return BT::NodeStatus::SUCCESS;
-      }
-      if ((node_->now() - operation_start_time_).seconds() > HEAD_TILT_TIMEOUT) {
-        RCLCPP_WARN(node_->get_logger(), "PickObject: timed out restoring neutral head pose");
-        state_ = PickState::DONE;
-        return BT::NodeStatus::SUCCESS;
-      }
-      return BT::NodeStatus::RUNNING;
     }
 
     case PickState::DONE:

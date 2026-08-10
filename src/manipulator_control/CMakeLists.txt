@@ -15,6 +15,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(btgencobot_interfaces REQUIRED)
 find_package(control_msgs REQUIRED)
+find_package(play_motion2_msgs REQUIRED)
 
 add_executable(manipulator_service src/manipulator_service.cpp)
 ament_target_dependencies(manipulator_service
@@ -27,6 +28,7 @@ ament_target_dependencies(manipulator_service
   moveit_core
   btgencobot_interfaces
   control_msgs
+  play_motion2_msgs
 )
 
 install(TARGETS
