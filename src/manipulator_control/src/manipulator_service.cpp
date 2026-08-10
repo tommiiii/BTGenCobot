@@ -128,6 +128,16 @@ private:
       return false;
     }
 
+    if (target_pose.header.frame_id.empty()) {
+      RCLCPP_ERROR(this->get_logger(), "Pick target has no reference frame");
+      return false;
+    }
+    // computeCartesianPath() accepts bare Pose waypoints and interprets them
+    // in this reference frame.  The perception target is expressed in map;
+    // leaving MoveIt's default robot frame here turns a short vertical descent
+    // into a several-metre diagonal request.
+    move_group_arm_->setPoseReferenceFrame(target_pose.header.frame_id);
+
     // 1. Open gripper
     RCLCPP_INFO(this->get_logger(), "Opening gripper...");
     if (!move_gripper(GRIPPER_OPEN, false)) {
@@ -139,12 +149,11 @@ private:
     // Exact URDF transform from arm_tool_link to gripper_grasping_frame.
     const double finger_length = 0.151;
     geometry_msgs::msg::PoseStamped grasp_pose = target_pose;
-    // We command arm_tool_link, which is 'finger_length' higher than the
-    // gripper tip. Preserve the measured object height, except for the model's
-    // 0.22 m reachable tool-height floor.
-    grasp_pose.pose.position.z = std::max(
-      target_pose.pose.position.z + 0.01 + finger_length,
-      0.22);
+    // We command arm_tool_link, which is 'finger_length' above the grasping
+    // frame. Keep the grasp center tied to the measured object center; an
+    // absolute tool-height clamp shifts small floor objects out of the fingers.
+    grasp_pose.pose.position.z =
+      target_pose.pose.position.z + 0.01 + finger_length;
     // Orientation for arm_tool_link to make gripper point DOWN:
     // X_arm=UP, Z_arm=FORWARD => q=[0, 0.707, 0, 0.707]
     grasp_pose.pose.orientation.x = 0.0;
@@ -157,6 +166,16 @@ private:
     // manipulation standoff. Only the staging pose needs this clearance; the
     // final grasp must remain tied to the measured object height.
     above_pose.pose.position.z = std::max(grasp_pose.pose.position.z + 0.20, 0.45);
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Pick geometry in %s: object [%.3f, %.3f, %.3f], "
+      "tool grasp [%.3f, %.3f, %.3f], pre-grasp z %.3f",
+      target_pose.header.frame_id.c_str(),
+      target_pose.pose.position.x, target_pose.pose.position.y,
+      target_pose.pose.position.z,
+      grasp_pose.pose.position.x, grasp_pose.pose.position.y,
+      grasp_pose.pose.position.z, above_pose.pose.position.z);
 
     // 1. Move to above pose (free space)
     RCLCPP_INFO(this->get_logger(), "Planning path to above pose...");
@@ -191,6 +210,8 @@ private:
     down_waypoints.push_back(grasp_pose.pose);
     moveit_msgs::msg::RobotTrajectory down_trajectory;
     double fraction = move_group_arm_->computeCartesianPath(down_waypoints, 0.01, down_trajectory);
+    RCLCPP_INFO(
+      this->get_logger(), "Cartesian descent fraction: %.3f", fraction);
     
     if (fraction >= 0.9) {
       success = (move_group_arm_->execute(down_trajectory) == moveit::core::MoveItErrorCode::SUCCESS);
@@ -265,6 +286,11 @@ private:
   bool execute_place(const geometry_msgs::msg::PoseStamped & target_pose)
   {
     if (!move_group_arm_) return false;
+    if (target_pose.header.frame_id.empty()) {
+      RCLCPP_ERROR(this->get_logger(), "Place target has no reference frame");
+      return false;
+    }
+    move_group_arm_->setPoseReferenceFrame(target_pose.header.frame_id);
 
     const double finger_length = 0.151;
     geometry_msgs::msg::PoseStamped place_pose = target_pose;

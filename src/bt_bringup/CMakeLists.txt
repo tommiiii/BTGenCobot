@@ -18,6 +18,7 @@ install(DIRECTORY
 install(PROGRAMS
   scripts/environment_publisher.py
   scripts/frontend_relay.py
+  scripts/mapping_session_publisher.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

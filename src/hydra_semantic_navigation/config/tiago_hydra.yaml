@@ -5,21 +5,32 @@ active_window:
   full_update_separation_s: 0.5
   volumetric_map:
     voxels_per_side: 16
-    voxel_size: 0.075
-    truncation_distance: 0.225
+    # MIT-SPARK's documented RGB-D profile. Finer voxels substantially
+    # increase partial object fragments without adding useful task geometry.
+    voxel_size: 0.1
+    truncation_distance: 0.3
   tsdf:
+    interpolation_method:
+      type: adaptive
+      max_depth_difference_m: 0.5
     semantic_integrator:
       type: MLESemanticIntegrator
-      label_confidence: 0.9
+  mesh:
+    min_weight: 0.5
 frontend:
   type: GraphBuilder
   pgmo:
     time_horizon: 15.0
     d_graph_resolution: 2.5
-    mesh_resolution: 0.01
+    mesh_resolution: 0.005
   objects:
-    min_cluster_size: 50
+    # Upstream single-RGB-D defaults. Hydra, rather than a custom 2D heuristic,
+    # owns the physical-object decision in the reconstructed 3D mesh.
+    min_cluster_size: 40
     cluster_tolerance: 0.25
+    # Spark-DSG's pinned RAABB extractor can return a box center outside the
+    # source object for near-degenerate indoor clusters. AABB is the upstream
+    # default and preserves the measured world geometry without inventing yaw.
     bounding_box_type: AABB
   surface_places:
     type: place_2d

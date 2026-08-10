@@ -339,6 +339,17 @@ def generate_launch_description():
         output='screen',
     )
 
+    saved_mapping_session = Node(
+        package='bt_bringup',
+        executable='mapping_session_publisher.py',
+        name='mapping_session_publisher',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'mapping_complete': True,
+        }],
+        output='screen',
+    )
+
     # Frontend compatibility relays: /head_front_camera/image -> /camera,
     # /scan_raw -> /scan, /head_front_camera/camera_info -> /camera_info.
     frontend_relay = Node(
@@ -393,6 +404,7 @@ def generate_launch_description():
         args=[profiles_file],
     ))
     ld.add_action(environment_publisher)
+    ld.add_action(saved_mapping_session)
     ld.add_action(frontend_relay)
     ld.add_action(gazebo_launch)
 

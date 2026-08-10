@@ -30,6 +30,11 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+from bt_text_interface.semantic_compilation import (
+    reacquisition_requested,
+    supply_live_pose_to_following_pick,
+)
+
 
 NAV_STATUS_NAMES = {
     1: 'UNKNOWN', 2: 'ACCEPTED', 3: 'EXECUTING',
@@ -828,14 +833,22 @@ class BTInterfaceNode(Node):
                     'planner_id': 'GridBased',
                 },
             )
+            follow_path_attributes = {
+                'name': f'Follow semantic route {route_index}.{waypoint_index}',
+                'path': path_key,
+                'controller_id': 'FollowPath',
+            }
+            if response.entity_type == 'object':
+                # Manipulation depends on the base actually facing the object;
+                # the relaxed general navigation tolerance can leave it near
+                # the edge of the arm workspace even when XY is acceptable.
+                follow_path_attributes['goal_checker_id'] = (
+                    'manipulation_goal_checker'
+                )
             ET.SubElement(
                 sequence,
                 'FollowPath',
-                {
-                    'name': f'Follow semantic route {route_index}.{waypoint_index}',
-                    'path': path_key,
-                    'controller_id': 'FollowPath',
-                },
+                follow_path_attributes,
             )
         return sequence
 
@@ -1051,24 +1064,21 @@ class BTInterfaceNode(Node):
                 '_live_object_pose',
                 '',
             )
-            if live_object_pose:
-                document_order = list(root.iter())
-                semantic_index = document_order.index(semantic_node)
-                for candidate in document_order[semantic_index + 1:]:
-                    candidate_id = (
-                        candidate.get('ID')
-                        if candidate.tag == 'Action'
-                        else candidate.tag
-                    )
-                    if candidate_id == 'NavigateSemantic':
-                        break
-                    if candidate_id == 'PickObject':
-                        candidate.set('object_pose', live_object_pose)
-                        self.get_logger().info(
-                            'Reusing the live navigation-fallback pose for '
-                            'PickObject; no second detection will run'
-                        )
-                        break
+            reused_live_pose = supply_live_pose_to_following_pick(
+                root,
+                semantic_node,
+                live_object_pose,
+            )
+            if reused_live_pose:
+                self.get_logger().info(
+                    'Reusing the navigation-time object pose for PickObject '
+                    'because reacquire=false'
+                )
+            elif live_object_pose and reacquisition_requested(semantic_node):
+                self.get_logger().info(
+                    'Discarding the navigation-time object pose; PickObject '
+                    'will reacquire from the final manipulation standoff'
+                )
             if (
                 response.entity_type == 'object'
                 and response.destination_pose.header.frame_id

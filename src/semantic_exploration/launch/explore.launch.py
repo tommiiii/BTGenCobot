@@ -10,6 +10,7 @@ def generate_launch_description():
     require_navigation_posture = LaunchConfiguration(
         "require_navigation_posture"
     )
+    head_sweep = LaunchConfiguration("head_sweep")
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
@@ -17,6 +18,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "require_navigation_posture", default_value="false"
             ),
+            DeclareLaunchArgument("head_sweep", default_value="false"),
             Node(
                 package="semantic_exploration",
                 executable="frontier_explorer",
@@ -28,6 +30,7 @@ def generate_launch_description():
                         "require_navigation_posture": (
                             require_navigation_posture
                         ),
+                        "head_sweep": head_sweep,
                     }
                 ],
                 output="screen",

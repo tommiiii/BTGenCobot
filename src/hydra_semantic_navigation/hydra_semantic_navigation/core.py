@@ -41,6 +41,14 @@ def normalize_label(value: str) -> str:
     return re.sub(r"\s+", " ", value)
 
 
+def parse_node_symbol(value: str) -> tuple[str, int]:
+    """Split Spark-DSG's printable node ID into constructor arguments."""
+    match = re.fullmatch(r"(.)(\d+)", value.strip())
+    if match is None:
+        raise ValueError(f"invalid Spark-DSG node symbol: {value!r}")
+    return match.group(1), int(match.group(2))
+
+
 def parse_entity_ref(
     entity_ref: str,
     entity_type: str = "",
@@ -88,6 +96,188 @@ class SemanticEntity:
             )
         )
 
+
+@dataclass(frozen=True)
+class ObjectNodeCandidate:
+    """Minimal object-node data needed for deterministic DSG de-duplication."""
+
+    node_id: str
+    label: str
+    position: tuple[float, float, float]
+    mesh_connection_count: int = 0
+    observed_at_ns: int = 0
+    bounds_min: Optional[tuple[float, float, float]] = None
+    bounds_max: Optional[tuple[float, float, float]] = None
+
+
+def _contains_position(
+    candidate: ObjectNodeCandidate,
+    position: tuple[float, float, float],
+    padding: float = 0.05,
+) -> bool:
+    if candidate.bounds_min is None or candidate.bounds_max is None:
+        return False
+    return all(
+        candidate.bounds_min[index] - padding
+        <= position[index]
+        <= candidate.bounds_max[index] + padding
+        for index in range(3)
+    )
+
+
+def _has_nondegenerate_bounds(candidate: ObjectNodeCandidate) -> bool:
+    if candidate.bounds_min is None or candidate.bounds_max is None:
+        return False
+    return all(
+        candidate.bounds_max[index] - candidate.bounds_min[index] > 1.0e-3
+        for index in range(3)
+    )
+
+
+def _same_object_segment(
+    lhs: ObjectNodeCandidate,
+    rhs: ObjectNodeCandidate,
+    fallback_radius: float,
+) -> bool:
+    if normalize_label(lhs.label) != normalize_label(rhs.label):
+        return False
+    if (
+        lhs.bounds_min is not None
+        and lhs.bounds_max is not None
+        and rhs.bounds_min is not None
+        and rhs.bounds_max is not None
+    ):
+        # Hydra's own object association uses the same centroid-in-bounds rule.
+        return _contains_position(lhs, rhs.position) or _contains_position(
+            rhs, lhs.position
+        )
+    return distance_2d(lhs.position, rhs.position) <= fallback_radius
+
+
+def redundant_object_node_ids(
+    candidates: Iterable[ObjectNodeCandidate],
+    radius: float = 0.35,
+) -> set[str]:
+    """Choose repeated same-class object nodes to remove from the canonical DSG.
+
+    Hydra retains archived segment nodes as its active reconstruction window
+    moves. Prefer non-degenerate geometry backed by the most mesh evidence.
+    When bounds exist, use Hydra's own centroid-in-bounds association rule;
+    distance is only a compatibility fallback for graphs without object bounds.
+    """
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            -int(_has_nondegenerate_bounds(candidate)),
+            -candidate.mesh_connection_count,
+            -candidate.observed_at_ns,
+            candidate.node_id,
+        ),
+    )
+    retained: list[ObjectNodeCandidate] = []
+    redundant: set[str] = set()
+    for candidate in ranked:
+        duplicate = any(
+            _same_object_segment(candidate, existing, radius)
+            for existing in retained
+        )
+        if duplicate:
+            redundant.add(candidate.node_id)
+        else:
+            retained.append(candidate)
+    return redundant
+
+
+def physically_invalid_object_node_ids(
+    candidates: Iterable[ObjectNodeCandidate],
+    min_extent_m: float = 0.015,
+    max_extent_m: float = 3.0,
+) -> set[str]:
+    """Reject degenerate mesh patches and room-scale object components.
+
+    This is deliberately class-independent.  Bounds which are absent remain a
+    validation error elsewhere; bounds which are present must describe a
+    physically useful object rather than a surface sliver or an entire room.
+    """
+    invalid: set[str] = set()
+    for candidate in candidates:
+        if candidate.bounds_min is None or candidate.bounds_max is None:
+            continue
+        extents = tuple(
+            candidate.bounds_max[index] - candidate.bounds_min[index]
+            for index in range(3)
+        )
+        if (
+            not all(math.isfinite(value) for value in extents)
+            or min(extents) < min_extent_m
+            or max(extents) > max_extent_m
+        ):
+            invalid.add(candidate.node_id)
+    return invalid
+
+
+def conflicting_object_node_ids(
+    candidates: Iterable[ObjectNodeCandidate],
+    exclusive_labels: Iterable[str],
+    overlap_fraction: float = 0.80,
+) -> set[str]:
+    """Suppress mutually exclusive furniture hypotheses on the same volume.
+
+    Pixel semantics can split one physical item into, for example, overlapping
+    ``bed`` and ``couch`` components.  Hydra cannot merge those because object
+    association is label-specific.  Retain the hypothesis with the strongest
+    mesh support when at least ``overlap_fraction`` of the smaller AABB is
+    occupied.  The caller controls the exclusive label set so contained small
+    objects (a bottle on a table) are never affected.
+    """
+    exclusive = {normalize_label(value) for value in exclusive_labels}
+    bounded = [
+        candidate
+        for candidate in candidates
+        if normalize_label(candidate.label) in exclusive
+        and _has_nondegenerate_bounds(candidate)
+    ]
+    ranked = sorted(
+        bounded,
+        key=lambda candidate: (
+            -candidate.mesh_connection_count,
+            -candidate.observed_at_ns,
+            candidate.node_id,
+        ),
+    )
+    retained: list[ObjectNodeCandidate] = []
+    redundant: set[str] = set()
+    for candidate in ranked:
+        candidate_extents = tuple(
+            candidate.bounds_max[index] - candidate.bounds_min[index]
+            for index in range(3)
+        )
+        candidate_volume = math.prod(candidate_extents)
+        conflict = False
+        for existing in retained:
+            if normalize_label(candidate.label) == normalize_label(existing.label):
+                continue
+            intersection = math.prod(
+                max(
+                    0.0,
+                    min(candidate.bounds_max[index], existing.bounds_max[index])
+                    - max(candidate.bounds_min[index], existing.bounds_min[index]),
+                )
+                for index in range(3)
+            )
+            existing_volume = math.prod(
+                existing.bounds_max[index] - existing.bounds_min[index]
+                for index in range(3)
+            )
+            smaller_volume = min(candidate_volume, existing_volume)
+            if smaller_volume > 0.0 and intersection / smaller_volume >= overlap_fraction:
+                conflict = True
+                break
+        if conflict:
+            redundant.add(candidate.node_id)
+        else:
+            retained.append(candidate)
+    return redundant
 
 @dataclass(frozen=True)
 class Match:
@@ -215,6 +405,12 @@ def choose_unambiguous_match(
     reference_position: Optional[tuple[float, float, float]] = None,
     distance_margin: float = 0.75,
 ) -> tuple[Optional[Match], Optional[str]]:
+    """Choose a stable candidate; semantic ambiguity is never a hard failure.
+
+    Callers should order candidates by route cost or physical distance before
+    invoking this compatibility helper.  ``preferred_id`` remains strict so an
+    explicitly grounded object cannot silently change identity.
+    """
     if preferred_id:
         for match in matches:
             if match.entity.node_id == preferred_id:
@@ -223,27 +419,39 @@ def choose_unambiguous_match(
 
     if not matches:
         return None, "unknown destination"
-    if len(matches) > 1:
-        first, second = matches[0], matches[1]
-        semantically_close = first.score - second.score < ambiguity_margin
-        spatially_distinct = distance_2d(
-            first.entity.position,
-            second.entity.position,
-        ) > 0.4
-        distance_is_decisive = False
-        if reference_position is not None:
-            first_distance = distance_2d(first.entity.position, reference_position)
-            second_distance = distance_2d(second.entity.position, reference_position)
-            distance_is_decisive = (
-                second_distance - first_distance >= distance_margin
-            )
-        if semantically_close and spatially_distinct and not distance_is_decisive:
-            candidates = ", ".join(
-                f"{match.entity.node_id}:{match.entity.label}"
-                for match in matches[:5]
-            )
-            return None, f"ambiguous destination; candidates: {candidates}"
     return matches[0], None
+
+
+def split_room_qualified_label(
+    label: str,
+    rooms: Iterable[SemanticEntity],
+) -> tuple[str, tuple[str, ...]]:
+    """Split ``kitchen table`` or ``table in the kitchen`` into room context.
+
+    The returned IDs may contain multiple rooms with the same inferred label;
+    route cost resolves between them later. If no known room qualifier is
+    present, the normalized label and an empty tuple are returned.
+    """
+    query = normalize_label(label)
+    grouped: dict[str, set[str]] = {}
+    for room in rooms:
+        for room_label in room.searchable_labels:
+            grouped.setdefault(room_label, set()).add(room.node_id)
+
+    for room_label in sorted(grouped, key=lambda value: (-len(value), value)):
+        prefix = f"{room_label} "
+        suffix = f" in {room_label}"
+        if query.startswith(prefix) and query[len(prefix):].strip():
+            return query[len(prefix):].strip(), tuple(sorted(grouped[room_label]))
+        if query.endswith(suffix) and query[:-len(suffix)].strip():
+            return query[:-len(suffix)].strip(), tuple(sorted(grouped[room_label]))
+        suffix_with_article = f" in the {room_label}"
+        if query.endswith(suffix_with_article) and query[:-len(suffix_with_article)].strip():
+            return (
+                query[:-len(suffix_with_article)].strip(),
+                tuple(sorted(grouped[room_label])),
+            )
+    return query, ()
 
 
 @dataclass(frozen=True)
@@ -389,6 +597,77 @@ def route_between_nearest_places(
     return []
 
 
+def route_cost(route: Iterable[str], places: Mapping[str, Place]) -> float:
+    """Return the metric/topological cost of a place route."""
+    route_ids = list(route)
+    total = 0.0
+    for source, target in zip(route_ids, route_ids[1:]):
+        total += float(
+            places[source].neighbors.get(
+                target,
+                distance_2d(places[source].position, places[target].position),
+            )
+        )
+    return total
+
+
+def choose_best_routable_match(
+    matches: Iterable[Match],
+    places: Mapping[str, Place],
+    start_position: tuple[float, float, float],
+    min_clearance: float,
+    target_standoff: Optional[tuple[float, float]] = None,
+    preferred_id: str = "",
+) -> tuple[Optional[Match], list[str], Optional[str]]:
+    """Always choose one semantic instance, preferring the cheapest route.
+
+    Semantic score remains the primary key so a nearby fuzzy match cannot beat
+    an exact label. Equal semantic matches prefer a reachable Hydra route, then
+    route cost, Euclidean distance and finally stable node ID. If every match
+    is unreachable, return the nearest deterministic choice with an empty
+    route so the caller can report reachability rather than ambiguity.
+    """
+    candidates = list(matches)
+    if preferred_id:
+        candidates = [
+            match for match in candidates if match.entity.node_id == preferred_id
+        ]
+        if not candidates:
+            return None, [], (
+                f"preferred entity {preferred_id!r} is not a matching candidate"
+            )
+    if not candidates:
+        return None, [], "unknown destination"
+
+    evaluated = []
+    for match in candidates:
+        route = route_between_nearest_places(
+            places,
+            start_position,
+            match.entity.position,
+            min_clearance,
+            target_standoff,
+        )
+        evaluated.append(
+            (
+                match,
+                route,
+                route_cost(route, places) if route else math.inf,
+            )
+        )
+    evaluated.sort(
+        key=lambda value: (
+            -value[0].score,
+            not bool(value[1]),
+            value[2],
+            distance_2d(value[0].entity.position, start_position),
+            value[0].entity.node_id,
+        )
+    )
+    match, route, _ = evaluated[0]
+    return match, route, None
+
+
 def simplify_route(
     route: list[str],
     places: Mapping[str, Place],
@@ -413,32 +692,53 @@ def simplify_route(
 
 DEFAULT_ROOM_EVIDENCE = {
     "kitchen": {
-        "appliance",
-        "refrigerator",
-        "oven",
-        "microwave",
-        "stove",
-        "sink",
-        "counter",
-        "food",
+        "appliance": 3.0,
+        "refrigerator": 5.0,
+        "oven": 5.0,
+        "microwave": 4.0,
+        "stove": 5.0,
+        "sink": 2.0,
+        "counter": 2.0,
+        "food": 0.5,
     },
-    "bedroom": {"bed", "pillow", "wardrobe", "clothes"},
-    "living room": {"seating", "sofa", "couch", "television", "coffee table"},
-    "bathroom": {"toilet", "bathtub", "shower", "sink"},
-    "dining room": {"dining table", "table", "chair", "food"},
+    "bedroom": {"bed": 6.0, "pillow": 4.0, "wardrobe": 2.0, "clothes": 1.0},
+    "living room": {
+        "seating": 1.0,
+        "sofa": 4.0,
+        "couch": 4.0,
+        "television": 5.0,
+        "coffee table": 2.0,
+    },
+    "bathroom": {"toilet": 6.0, "bathtub": 6.0, "shower": 5.0, "sink": 1.0},
+    "dining room": {"dining table": 6.0, "table": 1.0, "chair": 1.0, "food": 0.5},
 }
 
 
 def infer_room_label(
     evidence: Iterable[str],
-    rules: Mapping[str, Iterable[str]] = DEFAULT_ROOM_EVIDENCE,
+    rules: Mapping[
+        str,
+        Iterable[str] | Mapping[str, float],
+    ] = DEFAULT_ROOM_EVIDENCE,
 ) -> tuple[str, float]:
     observed = {normalize_label(value) for value in evidence}
     scored = []
     for room_label, expected_values in rules.items():
-        expected = {normalize_label(value) for value in expected_values}
-        hits = len(observed & expected)
-        score = hits / max(1.0, math.sqrt(len(expected)))
-        scored.append((score, normalize_label(room_label)))
-    score, room_label = max(scored, default=(0.0, "room"))
-    return (room_label, min(1.0, score)) if score > 0.0 else ("room", 0.0)
+        if isinstance(expected_values, Mapping):
+            weights = {
+                normalize_label(value): max(0.0, float(weight))
+                for value, weight in expected_values.items()
+            }
+        else:
+            weights = {
+                normalize_label(value): 1.0 for value in expected_values
+            }
+        score = sum(weights.get(value, 0.0) for value in observed)
+        possible = max(1.0, sum(weights.values()))
+        scored.append((score, score / possible, normalize_label(room_label)))
+    score, confidence, room_label = min(
+        scored,
+        key=lambda value: (-value[0], value[2]),
+        default=(0.0, 0.0, "room"),
+    )
+    return (room_label, min(1.0, confidence)) if score > 0.0 else ("room", 0.0)

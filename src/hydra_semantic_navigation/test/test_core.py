@@ -1,15 +1,22 @@
 from hydra_semantic_navigation.core import (
+    ObjectNodeCandidate,
     Place,
     SemanticEntity,
     astar_route,
+    choose_best_routable_match,
+    conflicting_object_node_ids,
     choose_unambiguous_match,
     infer_room_label,
     merge_nearby_entities,
     nearest_place,
     parse_entity_ref,
+    parse_node_symbol,
+    physically_invalid_object_node_ids,
     rank_entities,
     rank_matches_from_position,
+    redundant_object_node_ids,
     route_between_nearest_places,
+    split_room_qualified_label,
     support_surface_height,
 )
 
@@ -46,7 +53,12 @@ def test_runtime_labels_remain_free_text():
     assert parse_entity_ref("room:the Kitchen") == ("room", "kitchen")
 
 
-def test_ambiguous_object_requires_a_decisive_location_or_id():
+def test_spark_dsg_printable_node_symbol_is_parsed_for_removal():
+    assert parse_node_symbol("O3") == ("O", 3)
+    assert parse_node_symbol("p104") == ("p", 104)
+
+
+def test_equal_object_labels_always_choose_a_stable_instance():
     entities = [
         SemanticEntity("O1", "object", "red cup", (1.0, 0.0, 0.8)),
         SemanticEntity("O2", "object", "red cup", (4.0, 1.0, 0.8)),
@@ -57,8 +69,8 @@ def test_ambiguous_object_requires_a_decisive_location_or_id():
         matches,
         reference_position=(2.4, 0.5, 0.0),
     )
-    assert match is None
-    assert error.startswith("ambiguous destination")
+    assert error is None
+    assert match.entity.node_id == "O1"
 
     match, error = choose_unambiguous_match(matches, preferred_id="O2")
     assert error is None
@@ -133,6 +145,59 @@ def test_room_label_comes_from_object_evidence():
     assert confidence > 0.0
 
 
+def test_strong_bedroom_anchor_beats_generic_table_and_chair():
+    label, confidence = infer_room_label(
+        ["bed", "couch", "table", "chair", "storage", "wall decoration"]
+    )
+    assert label == "bedroom"
+    assert confidence > 0.0
+
+
+def test_room_qualified_object_label_returns_room_scope():
+    rooms = [
+        SemanticEntity("R0", "room", "kitchen", (0.0, 0.0, 0.0)),
+        SemanticEntity("R1", "room", "bedroom", (5.0, 0.0, 0.0)),
+    ]
+    assert split_room_qualified_label("kitchen table", rooms) == (
+        "table",
+        ("R0",),
+    )
+    assert split_room_qualified_label("table in the bedroom", rooms) == (
+        "table",
+        ("R1",),
+    )
+
+
+def test_duplicate_labels_choose_lowest_reachable_route_cost():
+    places = {
+        "start": Place(
+            "start",
+            (0.0, 0.0, 0.0),
+            0.5,
+            {"near": 2.0, "far": 7.0},
+        ),
+        "near": Place("near", (2.0, 0.0, 0.0), 0.5, {"start": 2.0}),
+        "far": Place("far", (7.0, 0.0, 0.0), 0.5, {"start": 7.0}),
+    }
+    matches = rank_entities(
+        "table",
+        "object",
+        [
+            SemanticEntity("O9", "object", "table", (7.0, 0.0, 0.0)),
+            SemanticEntity("O2", "object", "table", (2.0, 0.0, 0.0)),
+        ],
+    )
+    match, route, error = choose_best_routable_match(
+        matches,
+        places,
+        (0.0, 0.0, 0.0),
+        0.3,
+    )
+    assert error is None
+    assert match.entity.node_id == "O2"
+    assert route == ["start", "near"]
+
+
 def test_fuzzy_label_matching_has_a_threshold():
     entities = [
         SemanticEntity("R1", "room", "bedroom", (0.0, 0.0, 0.0)),
@@ -171,6 +236,133 @@ def test_repeated_nearby_objects_are_one_semantic_instance():
     ]
     merged = merge_nearby_entities(entities)
     assert len(merged) == 2
+
+
+def test_canonical_dsg_dedup_prefers_mesh_evidence_then_recency():
+    candidates = [
+        ObjectNodeCandidate("weak", "bed", (1.0, 2.0, 0.5), 20, 30),
+        ObjectNodeCandidate("best", "Bed", (1.1, 2.0, 1.1), 90, 10),
+        ObjectNodeCandidate("other", "bed", (2.0, 2.0, 0.5), 10, 40),
+        ObjectNodeCandidate("chair", "chair", (1.05, 2.0, 0.5), 5, 50),
+    ]
+
+    assert redundant_object_node_ids(candidates) == {"weak"}
+
+
+def test_canonical_dsg_dedup_does_not_chain_distinct_instances():
+    candidates = [
+        ObjectNodeCandidate("a", "can", (0.0, 0.0, 0.1), 30, 1),
+        ObjectNodeCandidate("b", "can", (0.3, 0.0, 0.1), 20, 2),
+        ObjectNodeCandidate("c", "can", (0.6, 0.0, 0.1), 10, 3),
+    ]
+
+    assert redundant_object_node_ids(candidates, radius=0.35) == {"b"}
+
+
+def test_object_geometry_gate_is_class_independent():
+    candidates = [
+        ObjectNodeCandidate(
+            "floor-patch", "table", (0.0, 0.0, 0.001), 50, 1,
+            (-0.5, -0.5, 0.0), (0.5, 0.5, 0.001),
+        ),
+        ObjectNodeCandidate(
+            "room-component", "storage", (0.0, 0.0, 0.7), 500, 1,
+            (-2.0, -2.0, 0.0), (2.0, 2.0, 1.4),
+        ),
+        ObjectNodeCandidate(
+            "bed", "bed", (0.0, 0.0, 0.5), 500, 1,
+            (-1.2, -1.0, 0.0), (1.2, 1.0, 1.2),
+        ),
+    ]
+
+    assert physically_invalid_object_node_ids(candidates) == {
+        "floor-patch",
+        "room-component",
+    }
+
+
+def test_overlapping_furniture_labels_keep_stronger_mesh_hypothesis():
+    candidates = [
+        ObjectNodeCandidate(
+            "bed", "bed", (0.0, 0.0, 0.5), 500, 1,
+            (-1.2, -1.0, 0.0), (1.2, 1.0, 1.2),
+        ),
+        ObjectNodeCandidate(
+            "couch-fragment", "couch", (0.0, 0.6, 0.7), 80, 2,
+            (-0.6, 0.4, 0.5), (0.7, 0.9, 0.9),
+        ),
+    ]
+
+    assert conflicting_object_node_ids(
+        candidates, ["bed", "couch", "table", "storage"]
+    ) == {"couch-fragment"}
+
+
+def test_small_object_on_table_is_not_an_exclusive_conflict():
+    candidates = [
+        ObjectNodeCandidate(
+            "table", "table", (0.0, 0.0, 0.4), 500, 1,
+            (-0.8, -0.5, 0.0), (0.8, 0.5, 0.8),
+        ),
+        ObjectNodeCandidate(
+            "can", "thing", (0.0, 0.0, 0.85), 30, 2,
+            (-0.03, -0.03, 0.8), (0.03, 0.03, 0.9),
+        ),
+    ]
+
+    assert not conflicting_object_node_ids(
+        candidates, ["bed", "couch", "table", "storage"]
+    )
+
+
+def test_canonical_dsg_uses_hydra_bounds_instead_of_proximity():
+    candidates = [
+        ObjectNodeCandidate(
+            "left",
+            "chair",
+            (0.0, 0.0, 0.5),
+            80,
+            1,
+            (-0.2, -0.2, 0.0),
+            (0.2, 0.2, 1.0),
+        ),
+        ObjectNodeCandidate(
+            "right",
+            "chair",
+            (0.3, 0.0, 0.5),
+            70,
+            2,
+            (0.25, -0.2, 0.0),
+            (0.45, 0.2, 1.0),
+        ),
+    ]
+
+    assert redundant_object_node_ids(candidates, radius=0.35) == set()
+
+
+def test_canonical_dsg_collapses_archived_segment_inside_object_bounds():
+    candidates = [
+        ObjectNodeCandidate(
+            "complete",
+            "bed",
+            (0.0, 0.0, 0.6),
+            1000,
+            1,
+            (-1.0, -0.5, 0.0),
+            (1.0, 0.5, 1.2),
+        ),
+        ObjectNodeCandidate(
+            "fragment",
+            "bed",
+            (0.8, 0.3, 0.7),
+            60,
+            2,
+            (0.7, 0.2, 0.4),
+            (0.9, 0.4, 0.9),
+        ),
+    ]
+
+    assert redundant_object_node_ids(candidates) == {"fragment"}
 
 
 def test_object_place_does_not_ignore_missing_standoff():

@@ -12,6 +12,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     adapter_share = get_package_share_directory("hydra_semantic_navigation")
+    hydra_share = get_package_share_directory("hydra")
     hydra_ros_share = get_package_share_directory("hydra_ros")
     visualizer_share = get_package_share_directory("hydra_visualizer")
 
@@ -21,10 +22,13 @@ def generate_launch_description():
 
     input_config = os.path.join(adapter_share, "config", "tiago_input.yaml")
     hydra_config = os.path.join(adapter_share, "config", "tiago_hydra.yaml")
+    # Use the same ADE20K -> Matterport3D grouping that MIT-SPARK's current
+    # semantic_inference launch selects by default.
     labelspace = os.path.join(
-        adapter_share,
+        hydra_share,
         "config",
-        "tiago_label_space.yaml",
+        "label_spaces",
+        "ade20k_mp3d_label_space.yaml",
     )
     sink_config = os.path.join(hydra_ros_share, "config", "sinks")
 
@@ -91,6 +95,7 @@ def generate_launch_description():
                 "assume_mapping_complete": assume_mapping_complete,
                 "dsg_topic": "/hydra/backend/live_dsg",
                 "published_dsg_topic": "/hydra/backend/dsg",
+                "semantic_label_space": labelspace,
             }
         ],
     )

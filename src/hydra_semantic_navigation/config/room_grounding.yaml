@@ -5,8 +5,24 @@ room_aliases:
   sleeping area: bedroom
 
 room_evidence:
-  kitchen: [appliance, refrigerator, oven, microwave, stove, sink, counter, food]
-  bedroom: [bed, pillow, wardrobe, clothes]
-  living room: [seating, sofa, couch, television, coffee table]
-  bathroom: [toilet, bathtub, shower, sink]
-  dining room: [dining table, table, chair, food]
+  # Strong, room-specific anchors outweigh generic furniture. This prevents a
+  # bedroom containing a side table and chair from becoming a dining room.
+  kitchen:
+    appliance: 3.0
+    appliances: 3.0
+    refrigerator: 5.0
+    oven: 5.0
+    microwave: 4.0
+    stove: 5.0
+    sink: 2.0
+    counter: 2.0
+    food: 0.5
+  bedroom: {bed: 6.0, cushion: 1.0, wardrobe: 2.0, chest of drawers: 2.0, clothes: 1.0}
+  living room:
+    seating: 1.0
+    sofa: 4.0
+    couch: 4.0
+    television: 5.0
+    coffee table: 2.0
+  bathroom: {toilet: 6.0, bathtub: 6.0, shower: 5.0, sink: 1.0}
+  dining room: {dining table: 6.0, table: 1.0, chair: 1.0, food: 0.5}

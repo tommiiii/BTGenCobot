@@ -1,10 +1,11 @@
-"""Fold TIAGo into its official ``home`` posture before autonomous driving.
+"""Put TIAGo in a repeatable mapping posture before autonomous driving.
 
 The simulation's stock ``tuck_arm.py`` goes through play_motion2, which waits
 for MoveIt's semantic robot description. Mapping intentionally does not start
 MoveIt, so that helper never moves the arm. This node sends the same official
-home trajectory directly to the already-running ros2_control controllers and
-keeps a transient-local readiness publisher alive for the explorer.
+home trajectory directly to the already-running ros2_control controllers,
+fixes the head at Hydra's calibrated RGB-D pose, and keeps a transient-local
+readiness publisher alive for the explorer and segmentation gate.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ ARM_WAYPOINTS = [
     [0.50, -1.34, -0.48, 1.94, -1.49, 1.37, 0.00],
 ]
 TORSO_WAYPOINTS = [[0.25], [0.18], [0.15]]
+HEAD_WAYPOINTS = [[0.0, -0.10], [0.0, -0.25], [0.0, -0.35]]
 WAYPOINT_TIMES = [2.0, 6.0, 8.0]
 
 
@@ -55,6 +57,11 @@ class NavigationPosture(Node):
             self,
             FollowJointTrajectory,
             "/torso_controller/follow_joint_trajectory",
+        )
+        self._head_client = ActionClient(
+            self,
+            FollowJointTrajectory,
+            "/head_controller/follow_joint_trajectory",
         )
         self._ready = False
         self.create_timer(1.0, self._publish_ready)
@@ -129,12 +136,26 @@ class NavigationPosture(Node):
         if not self._torso_client.wait_for_server(timeout_sec=wait_sec):
             self.get_logger().error("Torso trajectory controller is unavailable")
             return False
+        if not self._head_client.wait_for_server(timeout_sec=wait_sec):
+            self.get_logger().error("Head trajectory controller is unavailable")
+            return False
 
         # Raise the torso first so the arm can fold without sweeping low.
         if not self._wait_result(
             self._torso_client,
             self._goal(["torso_lift_joint"], TORSO_WAYPOINTS),
             "Torso",
+        ):
+            return False
+        # Hydra treats sensor extrinsics as rigid. Establish the calibrated
+        # mapping pose before allowing any RGB-D triplet into Hydra.
+        if not self._wait_result(
+            self._head_client,
+            self._goal(
+                ["head_1_joint", "head_2_joint"],
+                HEAD_WAYPOINTS,
+            ),
+            "Head",
         ):
             return False
         if not self._wait_result(

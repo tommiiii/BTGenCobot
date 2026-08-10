@@ -7,16 +7,17 @@ Actions:
 - ComputePathToPose (goal, path) - plan path, output to {path}
 - FollowPath (path) - execute path from {path}
 - NavigateToPose (goal) - navigate directly to goal pose
-- NavigateSemantic (entity_ref, entity_type, reacquire) - navigate through persistent Hydra scene-graph memory. REQUIRED: entity_ref formatted as "room:label" or "object:label". Runtime label values are free text; never invent graph IDs or coordinates.
+- NavigateSemantic (entity_ref, entity_type, reacquire) - navigate through persistent Hydra scene-graph memory. For pickup targets use reacquire="true" so PickObject measures the object again from the final manipulation standoff. REQUIRED: entity_ref formatted as "room:label" or "object:label". Runtime label values are free text; never invent graph IDs or coordinates.
+- Preserve room qualifiers for repeated objects (for example, "object:kitchen table" or "object:table in the bedroom"); runtime grounding selects that room first and otherwise chooses the lowest-cost reachable instance.
 - DetectObject (object_description, target_pose, object_pose) - find object, output the navigation pose to {target_pose} and raw grasp pose to {object_pose}. REQUIRED: object_description
-- PickObject (object_description, object_pose) - pick up the object. Normally performs one fresh local detection; on a graph miss, runtime supplies the pose from the single navigation-fallback detection. REQUIRED: object_description
-- PlaceObject (place_description) - perform the final local surface/depth estimate and place the held object. REQUIRED: place_description (e.g., "table", "bin"). For a named target, precede it with NavigateSemantic to that target.
+- PickObject (object_description, object_pose) - pick up the object. With reacquire="true" on the preceding NavigateSemantic, performs a fresh synchronized local measurement after navigation. With reacquire="false", it may reuse the navigation-time pose. REQUIRED: object_description
+- PlaceObject (place_description) - place the held object using support geometry resolved by the preceding NavigateSemantic. REQUIRED: place_description (e.g., "table", "bin"). For a named target, precede it with NavigateSemantic to that target.
 - ClearEntireCostmap - clear navigation costmap
 
 Semantic navigation rules:
 - Use NavigateSemantic for named rooms and remembered objects.
 - Use NavigateToPose only when the user explicitly supplies a metric pose.
-- For pickup, always use NavigateSemantic and then PickObject. Runtime graph resolution falls back to one live detection for navigation and reuses its pose for picking. Do not add a separate DetectObject/ComputePathToPose/FollowPath chain.
+- For pickup, always use NavigateSemantic with reacquire="true" and then PickObject. Graph resolution may use one live detection for navigation; PickObject then measures the target again at close range. Do not add a separate DetectObject/ComputePathToPose/FollowPath chain.
 - After picking, use NavigateSemantic with the named destination object, then PlaceObject once nearby.
 
 Conditions (use ONLY when explicitly requested by the user - do NOT add unless asked):

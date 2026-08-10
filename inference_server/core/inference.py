@@ -42,6 +42,7 @@ def _fix_main_tree_to_execute(xml_string: str) -> str:
 def generate_restricted_grammar(
     allowed_actions: List[str],
     structure: Optional[str] = None,
+    planned_entity_refs: Optional[List[str]] = None,
     max_depth: int = 5,
     max_siblings: int = 12,
 ) -> str:
@@ -52,7 +53,8 @@ def generate_restricted_grammar(
 
     Args:
         allowed_actions: List of allowed action names (e.g., ["SpinLeft", "BackUp", "DetectObject"])
-        structure: Optional structure hint (unused, kept for API compatibility)
+        structure: Optional top-level control structure from the query planner
+        planned_entity_refs: Ordered semantic references quoted by the planner
         max_depth: Maximum nesting depth (default 5 levels)
 
     Returns:
@@ -102,17 +104,50 @@ def generate_restricted_grammar(
     if not allowed_actions:
         raise ValueError("No actions provided in allowed_actions")
 
-    # Separate actions and conditions from input (deduplicate)
+    # Separate actions and conditions from input (deduplicate for rule creation,
+    # while retaining the original order and duplicates for a planned Sequence).
     unique_actions = []
     unique_conditions = []
+    planned_node_rules = []
 
-    for item in allowed_actions:
+    expected_semantic_refs = sum(
+        item == 'NavigateSemantic' for item in allowed_actions
+    )
+    ground_planned_refs = (
+        planned_entity_refs is not None
+        and len(planned_entity_refs) == expected_semantic_refs
+    )
+    semantic_ref_index = 0
+    pick_target_semantic_indices = set()
+
+    for plan_index, item in enumerate(allowed_actions):
         if item in KNOWN_ACTIONS:
             if item not in unique_actions:
                 unique_actions.append(item)
+            if item == 'NavigateSemantic':
+                semantic_ref_index += 1
+                feeds_pick = (
+                    plan_index + 1 < len(allowed_actions)
+                    and allowed_actions[plan_index + 1] == 'PickObject'
+                )
+                if feeds_pick:
+                    pick_target_semantic_indices.add(semantic_ref_index)
+                if ground_planned_refs:
+                    planned_node_rules.append(
+                        f'planned_navigatesemantic_{semantic_ref_index}_action'
+                    )
+                elif feeds_pick:
+                    planned_node_rules.append(
+                        f'planned_pick_navigatesemantic_{semantic_ref_index}_action'
+                    )
+                else:
+                    planned_node_rules.append(f'{item.lower()}_action')
+            else:
+                planned_node_rules.append(f'{item.lower()}_action')
         elif item in KNOWN_CONDITIONS:
             if item not in unique_conditions:
                 unique_conditions.append(item)
+            planned_node_rules.append(f'{item.lower()}_condition')
         else:
             logger.warning(f"Unknown action/condition: {item}, skipping")
 
@@ -131,6 +166,17 @@ def generate_restricted_grammar(
     for condition in unique_conditions:
         all_ports.update(CONDITION_PORTS.get(condition, []))
 
+    top_level_rules = {
+        'Sequence': 'planned_sequence',
+        'Fallback': 'fallback_l1',
+        'Parallel': 'parallel_l1',
+        'ReactiveSequence': 'reactive_seq_l1',
+        'ReactiveFallback': 'reactive_fb_l1',
+        'Retry': 'retry_l1',
+        'Repeat': 'repeat_l1',
+    }
+    bt_content_rule = top_level_rules.get(structure, 'node_l1')
+
     # Base grammar with explicit syntax
     grammar = r"""// BehaviorTree XML Grammar - EXPLICIT SYNTAX (Restricted)
 // Uses <Action ID="NodeType" .../> format to match model output
@@ -147,9 +193,46 @@ tree_id: /[A-Za-z_][A-Za-z0-9_]*/
 behavior_tree: "<BehaviorTree" " " bt_id_attr " "? ">" WS? bt_content WS? "</BehaviorTree>"
 bt_id_attr: "ID=\"" tree_id "\""
 
-bt_content: node_l1
-
 """
+    grammar += f'bt_content: {bt_content_rule}\n\n'
+
+    if structure == 'Sequence':
+        planned_children = ' WS? '.join(planned_node_rules)
+        grammar += (
+            'planned_sequence: "<Sequence" name_attr? ">" WS? '
+            f'{planned_children} WS? "</Sequence>"\n\n'
+        )
+
+    if ground_planned_refs:
+        for index, entity_ref in enumerate(planned_entity_refs or [], start=1):
+            entity_type = entity_ref.split(':', 1)[0]
+            escaped_ref = entity_ref.replace('\\', '\\\\').replace('"', '\\"')
+            grammar += (
+                f'planned_navigatesemantic_{index}_action: '
+                '"<Action" " " "ID=\\"NavigateSemantic\\"" " "? '
+                f'" " "entity_ref=\\"{escaped_ref}\\"" '
+                f'" " "entity_type=\\"{entity_type}\\"" '
+                + (
+                    '" " "reacquire=\\"true\\"" "/>"\n'
+                    if index in pick_target_semantic_indices
+                    else (
+                        '" " "reacquire=\\"" '
+                        '("true" | "false") "\\"" "/>"\n'
+                    )
+                )
+            )
+        grammar += '\n'
+
+    if not ground_planned_refs:
+        for index in sorted(pick_target_semantic_indices):
+            grammar += (
+                f'planned_pick_navigatesemantic_{index}_action: '
+                '"<Action" " " "ID=\\"NavigateSemantic\\"" " "? '
+                'entity_ref_attr entity_type_attr '
+                '" " "reacquire=\\"true\\"" "/>"\n'
+            )
+        if pick_target_semantic_indices:
+            grammar += '\n'
 
     # Build node definitions for each level
     has_conditions = len(unique_conditions) > 0
@@ -300,16 +383,16 @@ def parse_allowed_actions(rewritten_input: str) -> Tuple[Optional[List[str]], Op
     if structure_match:
         structure_str = structure_match.group(1).strip()
         # Extract main control structure type
-        if 'Fallback' in structure_str:
-            structure = 'Fallback'
+        if 'ReactiveFallback' in structure_str:
+            structure = 'ReactiveFallback'
+        elif 'ReactiveSequence' in structure_str:
+            structure = 'ReactiveSequence'
         elif 'RetryUntilSuccessful' in structure_str or 'Retry' in structure_str:
             structure = 'Retry'
         elif 'Repeat' in structure_str:
             structure = 'Repeat'
-        elif 'ReactiveSequence' in structure_str:
-            structure = 'ReactiveSequence'
-        elif 'ReactiveFallback' in structure_str:
-            structure = 'ReactiveFallback'
+        elif 'Fallback' in structure_str:
+            structure = 'Fallback'
         elif 'Sequence' in structure_str:
             structure = 'Sequence'
         else:
@@ -319,6 +402,22 @@ def parse_allowed_actions(rewritten_input: str) -> Tuple[Optional[List[str]], Op
         logger.info(f"Parsed allowed actions: {actions}, structure: {structure}")
     
     return actions, structure
+
+
+def parse_planned_entity_refs(rewritten_input: str) -> List[str]:
+    """Extract ordered, typed semantic references explicitly supplied by the planner."""
+    binding_line = re.search(
+        r'^SemanticRefs:\s*([^\n]*)$',
+        rewritten_input or '',
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    source = binding_line.group(1) if binding_line else (rewritten_input or '')
+    references = re.findall(
+        r'entity_ref\s*=\s*"((?:room|object):[^"<>]+)"',
+        source,
+        flags=re.IGNORECASE,
+    )
+    return [reference.strip() for reference in references]
 
 
 class BTGenerator:
@@ -580,7 +679,13 @@ class BTGenerator:
                 allowed_actions, structure = parse_allowed_actions(rewritten_input)
                 if allowed_actions:
                     try:
-                        grammar_str = generate_restricted_grammar(allowed_actions, structure)
+                        grammar_str = generate_restricted_grammar(
+                            allowed_actions,
+                            structure,
+                            planned_entity_refs=parse_planned_entity_refs(
+                                rewritten_input
+                            ),
+                        )
                         custom_grammar = grammar_str
                         logger.info(f"Using restricted grammar with actions: {allowed_actions}, structure: {structure}")
                         logger.debug(f"Generated grammar:\n{grammar_str}")

@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Optional
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
@@ -32,18 +31,21 @@ from btgencobot_interfaces.msg import SceneGraphStatus, SemanticObjectObservatio
 from btgencobot_interfaces.srv import ResolveSemanticNavigation
 
 from .core import (
+    ObjectNodeCandidate,
     Place,
     SemanticEntity,
-    choose_unambiguous_match,
+    choose_best_routable_match,
+    conflicting_object_node_ids,
     infer_room_label,
-    merge_nearby_entities,
     nearest_place,
     normalize_label,
     parse_entity_ref,
+    parse_node_symbol,
+    physically_invalid_object_node_ids,
     rank_entities,
-    rank_matches_from_position,
-    route_between_nearest_places,
+    redundant_object_node_ids,
     simplify_route,
+    split_room_qualified_label,
     support_surface_height,
 )
 
@@ -64,6 +66,14 @@ def _node_id(value) -> str:
     return dsg.NodeSymbol(value).str()
 
 
+def _node_symbol(value):
+    """Construct a Spark-DSG symbol from either its numeric or printable ID."""
+    if isinstance(value, str):
+        prefix, index = parse_node_symbol(value)
+        return dsg.NodeSymbol(prefix, index)
+    return dsg.NodeSymbol(value)
+
+
 def _position_tuple(attributes) -> tuple[float, float, float]:
     value = attributes.position
     return float(value[0]), float(value[1]), float(value[2])
@@ -75,9 +85,28 @@ def _bounds_tuple(attributes):
         bounds = attributes.bounding_box
         if not bounds.is_valid():
             return None, None
-        return (
-            tuple(float(value) for value in bounds.min),
-            tuple(float(value) for value in bounds.max),
+        corners = np.asarray(bounds.corners(), dtype=float)
+        if corners.shape == (8, 3) and np.all(np.isfinite(corners)):
+            lower = corners.min(axis=0)
+            upper = corners.max(axis=0)
+        else:
+            # Compatibility with older Spark-DSG bindings without corners.
+            first = np.asarray(bounds.min, dtype=float)
+            second = np.asarray(bounds.max, dtype=float)
+            lower = np.minimum(first, second)
+            upper = np.maximum(first, second)
+
+        # An object's mesh centroid must lie inside its own fitted box. The
+        # pinned RAABB extractor can violate this for degenerate clusters; such
+        # bounds are unusable for navigation, validation, or association.
+        position = np.asarray(attributes.position, dtype=float)
+        tolerance = 0.05
+        if np.any(position < lower - tolerance) or np.any(
+            position > upper + tolerance
+        ):
+            return None, None
+        return tuple(float(value) for value in lower), tuple(
+            float(value) for value in upper
         )
     except Exception:
         return None, None
@@ -107,6 +136,7 @@ class SceneGraphAdapter(Node):
         # grasp outside the arm workspace.
         self.declare_parameter("object_standoff_min", 0.45)
         self.declare_parameter("object_standoff_max", 0.85)
+        self.declare_parameter("object_standoff_preferred", 0.55)
         # Persisted reconstructions can preserve an object's dimensions while
         # carrying a bad absolute Z offset.  A compact support whose entire
         # AABB floats well above the navigation floor is re-anchored by height;
@@ -121,11 +151,58 @@ class SceneGraphAdapter(Node):
         self.declare_parameter("freeze_persisted_graph", True)
         self.declare_parameter("max_object_count", 300)
         self.declare_parameter("max_objects_per_label", 80)
+        self.declare_parameter("duplicate_object_radius_m", 0.35)
+        self.declare_parameter("minimum_object_extent_m", 0.015)
+        self.declare_parameter("maximum_object_extent_m", 3.0)
+        self.declare_parameter("exclusive_object_overlap_fraction", 0.80)
+        self.declare_parameter(
+            "exclusive_object_labels",
+            [
+                "bed",
+                "chair",
+                "couch",
+                "sofa",
+                "door",
+                "shelf",
+                "shelving",
+                "storage",
+                "cabinet",
+                "chest of drawers",
+                "table",
+                "appliance",
+            ],
+        )
+        self.declare_parameter("mapping_floor_z", 0.0)
+        # Partial views may segment only a tabletop or chair back, so this is a
+        # deliberately tolerant *systematic corruption* gate, not a per-object
+        # assumption that every reconstructed box must touch the floor.
+        self.declare_parameter("max_ground_object_floor_gap_m", 0.75)
+        self.declare_parameter("max_floating_ground_object_fraction", 0.50)
+        # Every Hydra object is expected to have a usable fitted box. Even one
+        # centroid-outside-box result is evidence of corrupted geometry.
+        self.declare_parameter("max_invalid_object_bounds_fraction", 0.0)
+        self.declare_parameter(
+            "floor_supported_object_labels",
+            [
+                "bed",
+                "chair",
+                "table",
+                "storage",
+                "shelf",
+                "couch",
+                "appliance",
+                "door",
+            ],
+        )
         self.declare_parameter("min_place_count", 20)
         self.declare_parameter("min_largest_place_component_ratio", 0.35)
         self.declare_parameter(
             "forbidden_object_labels",
-            ["door", "rail", "window", "decor", "light"],
+            # Hydra's loaded label space is the authority for object classes.
+            # The official indoor space intentionally includes doors, wall
+            # decorations, and lights, so a second hard-coded taxonomy would
+            # produce false quality warnings.
+            [],
         )
         self.declare_parameter(
             "room_grounding_config",
@@ -138,9 +215,10 @@ class SceneGraphAdapter(Node):
         self.declare_parameter(
             "semantic_label_space",
             str(
-                Path(get_package_share_directory("hydra_semantic_navigation"))
+                Path(get_package_share_directory("hydra"))
                 / "config"
-                / "tiago_label_space.yaml"
+                / "label_spaces"
+                / "ade20k_mp3d_label_space.yaml"
             ),
         )
 
@@ -166,11 +244,14 @@ class SceneGraphAdapter(Node):
         self._navigation_map: OccupancyGrid | None = None
         self._semantic_observations: list[dict] = []
         self._room_aliases: dict[str, str] = {}
-        self._room_rules: dict[str, list[str]] = {}
+        self._room_rules: dict[str, object] = {}
         self._semantic_label_names: dict[int, str] = {}
         self._load_grounding_config()
         self._load_semantic_label_space()
-        self._load_persistent_state()
+        # Persistence is opt-in.  A mapping runtime must never flash an old DSG
+        # before its transient-local "mapping in progress" signal arrives.
+        if self._mapping_complete:
+            self._load_persistent_state()
 
         self._tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=3600.0))
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -304,6 +385,7 @@ class SceneGraphAdapter(Node):
                 self._graph = dsg.DynamicSceneGraph.load(
                     str(self._persistence_path)
                 )
+                removed = self._remove_redundant_object_nodes()
                 self._graph_version = 1
                 self._loaded_from_disk = True
                 self._accept_live_updates = not bool(
@@ -311,7 +393,8 @@ class SceneGraphAdapter(Node):
                 )
                 self._mapping_complete = True
                 self.get_logger().info(
-                    f"Loaded persisted DSG from {self._persistence_path}"
+                    f"Loaded persisted DSG from {self._persistence_path}; "
+                    f"removed {removed} redundant object nodes"
                 )
             except Exception as exc:
                 self._last_error = f"failed to load persisted DSG: {exc}"
@@ -360,9 +443,10 @@ class SceneGraphAdapter(Node):
                     self._graph.update_from_binary(contents)
                 for raw_node_id in msg.deleted_nodes:
                     try:
-                        self._graph.remove_node(dsg.NodeSymbol(raw_node_id))
+                        self._graph.remove_node(_node_symbol(raw_node_id))
                     except Exception:
                         pass
+                removed = self._remove_redundant_object_nodes()
                 self._graph_version = max(
                     self._graph_version + 1,
                     int(msg.sequence_number) + 1,
@@ -372,13 +456,95 @@ class SceneGraphAdapter(Node):
                 self._update_times.append(now)
                 self._update_times = self._update_times[-30:]
                 self._last_error = ""
-            # The adapter owns the canonical stream consumed by the visualizer:
-            # accepted mapping updates pass through, while runtime startup uses
-            # the restored snapshot published above.
-            self._dsg_pub.publish(msg)
+                canonical_contents = self._graph.to_binary()
+                sequence_number = self._graph_version
+            # Publish a complete canonical snapshot. Forwarding Hydra's raw
+            # delta would leave nodes that the adapter has de-duplicated visible
+            # in Foxglove and in downstream consumers.
+            canonical = DsgUpdate()
+            canonical.header = msg.header
+            canonical.layer_contents = canonical_contents
+            canonical.full_update = True
+            canonical.sequence_number = sequence_number
+            self._dsg_pub.publish(canonical)
+            if removed:
+                self.get_logger().debug(
+                    f"Removed {removed} redundant Hydra object nodes"
+                )
         except Exception as exc:
             self._last_error = f"DSG update failed: {exc}"
             self.get_logger().error(self._last_error)
+
+    def _remove_redundant_object_nodes(self) -> int:
+        """Canonicalize repeated and physically impossible object hypotheses."""
+        if self._graph is None:
+            return 0
+        objects = self._layer(dsg.DsgLayers.OBJECTS)
+        if objects is None:
+            return 0
+        candidates = []
+        for node in objects.nodes:
+            label = self._label_for_node(node, dsg.DsgLayers.OBJECTS)
+            if not label:
+                continue
+            attributes = node.attributes
+            bounds_min, bounds_max = _bounds_tuple(attributes)
+            candidates.append(
+                ObjectNodeCandidate(
+                    node_id=_node_id(node.id),
+                    label=label,
+                    position=_position_tuple(attributes),
+                    mesh_connection_count=len(
+                        getattr(attributes, "mesh_connections", [])
+                    ),
+                    observed_at_ns=int(
+                        getattr(attributes, "last_update_time_ns", 0)
+                    ),
+                    bounds_min=bounds_min,
+                    bounds_max=bounds_max,
+                )
+            )
+        redundant = redundant_object_node_ids(
+            candidates,
+            radius=float(
+                self.get_parameter("duplicate_object_radius_m").value
+            ),
+        )
+        redundant |= physically_invalid_object_node_ids(
+            candidates,
+            min_extent_m=float(
+                self.get_parameter("minimum_object_extent_m").value
+            ),
+            max_extent_m=float(
+                self.get_parameter("maximum_object_extent_m").value
+            ),
+        )
+        valid_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.node_id not in redundant
+        ]
+        redundant |= conflicting_object_node_ids(
+            valid_candidates,
+            self.get_parameter("exclusive_object_labels").value,
+            overlap_fraction=float(
+                self.get_parameter("exclusive_object_overlap_fraction").value
+            ),
+        )
+        removed = 0
+        for node_id in redundant:
+            try:
+                if self._graph.remove_node(_node_symbol(node_id)):
+                    removed += 1
+                else:
+                    self.get_logger().warning(
+                        f"Redundant object {node_id} was not present in the DSG"
+                    )
+            except Exception as exc:
+                self.get_logger().warning(
+                    f"Failed to remove redundant object {node_id}: {exc}"
+                )
+        return removed
 
     def _mapping_complete_callback(self, msg: Bool) -> None:
         mapping_complete = bool(msg.data)
@@ -397,6 +563,16 @@ class SceneGraphAdapter(Node):
                 self._loaded_from_disk = False
                 self._accept_live_updates = True
                 self._semantic_observations = []
+                if self._restore_timer is not None:
+                    self._restore_timer.cancel()
+                    self._restore_timer = None
+            elif mapping_complete and self._graph is None:
+                # Normal saved-map bringup explicitly opts into restoration.
+                self._load_persistent_state()
+                if self._loaded_from_disk:
+                    self._restore_timer = self.create_timer(
+                        0.5, self._publish_persisted_graph
+                    )
             self._mapping_complete = mapping_complete
 
     def _semantic_observation_callback(
@@ -510,7 +686,10 @@ class SceneGraphAdapter(Node):
                     source=str(observation.get("source", "live_observation")),
                 )
             )
-        return merge_nearby_entities(entities)
+        # Hydra graph nodes have already been canonicalized in-place. Returning
+        # a separately radius-merged view would let validation report a clean
+        # graph while Foxglove and persistence still contain duplicate nodes.
+        return entities
 
     def _hierarchical_room_objects(self) -> dict[str, list[SemanticEntity]]:
         """Collect objects using Hydra's object -> place -> room edges."""
@@ -832,6 +1011,7 @@ class SceneGraphAdapter(Node):
         if not np.any(within_radius):
             return None
         candidate_indices = np.flatnonzero(within_radius)
+        semantic_distances: dict[int, float] = {}
         if semantic_target is not None and target_standoff is not None:
             min_standoff, max_standoff = target_standoff
             standoff_ok = np.zeros(candidate_indices.shape, dtype=bool)
@@ -844,13 +1024,30 @@ class SceneGraphAdapter(Node):
                     candidate_x - semantic_target[0],
                     candidate_y - semantic_target[1],
                 )
+                semantic_distances[int(candidate_index)] = distance
                 standoff_ok[offset] = (
                     min_standoff <= distance <= max_standoff
                 )
             candidate_indices = candidate_indices[standoff_ok]
             if candidate_indices.size == 0:
                 return None
-        best = int(candidate_indices[np.argmin(distances[candidate_indices])])
+        if semantic_distances:
+            preferred_standoff = float(
+                self.get_parameter("object_standoff_preferred").value
+            )
+            # Hydra places are topological route anchors, not necessarily the
+            # best arm staging pose. Select a clear map cell near the middle of
+            # the robot's manipulation workspace, using proximity to the route
+            # anchor only as a tie-breaker.
+            best = min(
+                (int(index) for index in candidate_indices),
+                key=lambda index: (
+                    abs(semantic_distances[index] - preferred_standoff),
+                    float(distances[index]),
+                ),
+            )
+        else:
+            best = int(candidate_indices[np.argmin(distances[candidate_indices])])
         return cell_to_world(int(rows[best]), int(cols[best]))
 
     def _resolve_callback(self, request, response):
@@ -874,12 +1071,38 @@ class SceneGraphAdapter(Node):
             object_entities = self._object_entities()
             room_entities = self._room_entities(object_entities)
             entities = room_entities if entity_type == "room" else object_entities
+            hierarchical_room_objects = self._hierarchical_room_objects()
             graph_version = self._graph_version
 
         if not places:
             response.status = STATUS_GRAPH_NOT_READY
             response.error_message = "Hydra graph has no traversable places"
             return response
+
+        if entity_type == "object":
+            object_label, qualified_room_ids = split_room_qualified_label(
+                label,
+                room_entities,
+            )
+            if qualified_room_ids:
+                qualified_object_ids = {
+                    entity.node_id
+                    for room_id in qualified_room_ids
+                    for entity in hierarchical_room_objects.get(room_id, [])
+                }
+                scoped_entities = [
+                    entity
+                    for entity in object_entities
+                    if entity.node_id in qualified_object_ids
+                ]
+                if scoped_entities:
+                    entities = scoped_entities
+                else:
+                    self.get_logger().warning(
+                        f'No objects are attached to qualified room in "{label}"; '
+                        "falling back to all object instances"
+                    )
+                label = object_label
 
         matches = rank_entities(label, entity_type, entities)
         minimum_match_score = float(
@@ -892,28 +1115,50 @@ class SceneGraphAdapter(Node):
                 f'{minimum_match_score:.2f}'
             )
             matches = []
-        start_position = None
-        if matches and not request.preferred_id:
-            try:
-                start_position = self._robot_position()
-            except Exception as exc:
-                response.status = STATUS_INTERNAL_ERROR
-                response.error_message = f"robot pose unavailable: {exc}"
-                return response
-            matches = rank_matches_from_position(matches, start_position)
-        match, error = choose_unambiguous_match(
+        if not matches:
+            response.status = STATUS_UNKNOWN_DESTINATION
+            response.error_message = "unknown destination"
+            return response
+        try:
+            start_position = self._robot_position()
+        except Exception as exc:
+            response.status = STATUS_INTERNAL_ERROR
+            response.error_message = f"robot pose unavailable: {exc}"
+            return response
+
+        min_clearance = float(self.get_parameter("min_place_clearance").value)
+        if nearest_place(places, start_position, min_clearance) is None:
+            response.status = STATUS_NO_TRAVERSABLE_PLACE
+            response.error_message = "no traversable Hydra place near robot"
+            return response
+
+        target_standoff = None
+        if entity_type == "object":
+            target_standoff = (
+                float(self.get_parameter("object_standoff_min").value),
+                float(self.get_parameter("object_standoff_max").value),
+            )
+        match, route, error = choose_best_routable_match(
             matches,
+            places,
+            start_position,
+            min_clearance,
+            target_standoff,
             request.preferred_id,
-            reference_position=start_position,
         )
         if match is None:
-            response.status = (
-                STATUS_AMBIGUOUS_DESTINATION
-                if error and error.startswith("ambiguous")
-                else STATUS_UNKNOWN_DESTINATION
-            )
+            response.status = STATUS_UNKNOWN_DESTINATION
             response.error_message = error or "unknown destination"
             return response
+        if not route:
+            response.status = STATUS_UNREACHABLE
+            response.error_message = (
+                "Hydra place graph has no component connecting robot to "
+                f"selected destination {match.entity.node_id}"
+            )
+            return response
+
+        target_place = places[route[-1]]
 
         stale_after = float(self.get_parameter("object_stale_after_sec").value)
         if (
@@ -921,19 +1166,22 @@ class SceneGraphAdapter(Node):
             and match.entity.source != "hydra"
             and not request.allow_stale
         ):
-            if match.entity.observed_wall_time_ns:
-                age_sec = max(
-                    0.0,
-                    (time.time_ns() - match.entity.observed_wall_time_ns) / 1e9,
-                )
-            elif match.entity.observed_at_ns:
-                now_ns = self.get_clock().now().nanoseconds
-                age_sec = (
-                    math.inf
-                    if now_ns < match.entity.observed_at_ns
-                    else (now_ns - match.entity.observed_at_ns) / 1e9
-                )
-            else:
+            try:
+                if match.entity.observed_wall_time_ns:
+                    age_sec = max(
+                        0.0,
+                        (time.time_ns() - match.entity.observed_wall_time_ns) / 1e9,
+                    )
+                elif match.entity.observed_at_ns:
+                    now_ns = self.get_clock().now().nanoseconds
+                    age_sec = (
+                        math.inf
+                        if now_ns < match.entity.observed_at_ns
+                        else (now_ns - match.entity.observed_at_ns) / 1e9
+                    )
+                else:
+                    age_sec = math.inf
+            except Exception:
                 age_sec = math.inf
             if age_sec > stale_after:
                 response.status = STATUS_STALE_DESTINATION
@@ -942,89 +1190,8 @@ class SceneGraphAdapter(Node):
                 )
                 return response
 
-        min_clearance = float(self.get_parameter("min_place_clearance").value)
-        target_standoff = None
-        # Both persistent Hydra objects and one-shot detector observations need
-        # an arm-reachable base standoff.  Without this for live observations,
-        # the closest Hydra place can coincide with the object itself, so the
-        # base pushes a floor object away before manipulation begins.
-        if entity_type == "object":
-            target_standoff = (
-                float(self.get_parameter("object_standoff_min").value),
-                float(self.get_parameter("object_standoff_max").value),
-            )
-        target_place = nearest_place(
-            places,
-            match.entity.position,
-            min_clearance,
-            target_standoff,
-        )
-        if target_place is None and not request.preferred_id:
-            for alternative in matches[1:]:
-                candidate_place = nearest_place(
-                    places,
-                    alternative.entity.position,
-                    min_clearance,
-                    target_standoff,
-                )
-                if candidate_place is not None:
-                    match = alternative
-                    target_place = candidate_place
-                    break
-        if target_place is None:
-            response.status = STATUS_NO_TRAVERSABLE_PLACE
-            response.error_message = "no collision-safe Hydra place near destination"
-            return response
-
-        if start_position is None:
-            try:
-                start_position = self._robot_position()
-            except Exception as exc:
-                response.status = STATUS_INTERNAL_ERROR
-                response.error_message = f"robot pose unavailable: {exc}"
-                return response
-        if nearest_place(places, start_position, min_clearance) is None:
-            response.status = STATUS_NO_TRAVERSABLE_PLACE
-            response.error_message = "no traversable Hydra place near robot"
-            return response
-
-        route = route_between_nearest_places(
-            places,
-            start_position,
-            match.entity.position,
-            min_clearance,
-            target_standoff,
-        )
-        if not route and entity_type == "object" and not request.preferred_id:
-            for alternative in matches:
-                if alternative.entity.node_id == match.entity.node_id:
-                    continue
-                candidate_place = nearest_place(
-                    places,
-                    alternative.entity.position,
-                    min_clearance,
-                    target_standoff,
-                )
-                if candidate_place is None:
-                    continue
-                candidate_route = route_between_nearest_places(
-                    places,
-                    start_position,
-                    alternative.entity.position,
-                    min_clearance,
-                    target_standoff,
-                )
-                if candidate_route:
-                    match = alternative
-                    route = candidate_route
-                    break
-        if not route:
-            response.status = STATUS_UNREACHABLE
-            response.error_message = (
-                "Hydra place graph has no component connecting robot to destination"
-            )
-            return response
-        target_place = places[route[-1]]
+        # Both persistent Hydra objects and one-shot detector observations use
+        # the route-selected arm-reachable standoff computed above.
         route = simplify_route(route, places)
         with self._lock:
             navigation_map_ready = self._navigation_map is not None
@@ -1035,16 +1202,8 @@ class SceneGraphAdapter(Node):
         projected_target = self._project_navigation_goal(
             target_place.position,
             start_position,
-            (
-                match.entity.position
-                if match.entity.source == "grounding_dino:live_fallback"
-                else None
-            ),
-            (
-                target_standoff
-                if match.entity.source == "grounding_dino:live_fallback"
-                else None
-            ),
+            match.entity.position if entity_type == "object" else None,
+            target_standoff,
         )
         if projected_target is None:
             response.status = STATUS_UNREACHABLE
@@ -1158,6 +1317,12 @@ class SceneGraphAdapter(Node):
                 response.message = "no scene graph is available"
                 return response
             validation_error, summary = self._validate_graph()
+            if validation_error.startswith("unsafe geometry:"):
+                response.success = False
+                response.message = (
+                    f"refusing to save scene graph: {validation_error}; {summary}"
+                )
+                return response
             if validation_error:
                 self.get_logger().warning(
                     f"Saving scene graph with quality warning: "
@@ -1215,6 +1380,14 @@ class SceneGraphAdapter(Node):
                 response.message = "no scene graph is available"
                 return response
             validation_error, summary = self._validate_graph()
+            if validation_error.startswith("unsafe geometry:"):
+                self._discard_pending_save()
+                response.success = False
+                response.message = (
+                    "refusing to prepare scene-graph save: "
+                    f"{validation_error}; {summary}"
+                )
+                return response
             try:
                 if validation_error:
                     self.get_logger().warning(
@@ -1361,6 +1534,67 @@ class SceneGraphAdapter(Node):
                 f"{fragmented}"
             ), summary
 
+        bounded_objects = [
+            entity for entity in objects if entity.source == "hydra"
+        ]
+        invalid_bounds = [
+            entity
+            for entity in bounded_objects
+            if entity.bounds_min is None or entity.bounds_max is None
+        ]
+        invalid_bounds_fraction = len(invalid_bounds) / max(
+            1, len(bounded_objects)
+        )
+        max_invalid_bounds_fraction = float(
+            self.get_parameter("max_invalid_object_bounds_fraction").value
+        )
+        if invalid_bounds_fraction > max_invalid_bounds_fraction:
+            return (
+                "unsafe geometry: "
+                f"{len(invalid_bounds)}/{len(bounded_objects)} object boxes "
+                "do not contain their mesh centroids"
+            ), summary
+
+        supported_labels = {
+            normalize_label(value)
+            for value in self.get_parameter(
+                "floor_supported_object_labels"
+            ).value
+        }
+        floor_z = float(self.get_parameter("mapping_floor_z").value)
+        max_gap = float(
+            self.get_parameter("max_ground_object_floor_gap_m").value
+        )
+        grounded_candidates = [
+            entity
+            for entity in objects
+            if normalize_label(entity.label) in supported_labels
+            and entity.bounds_min is not None
+        ]
+        floating = [
+            entity
+            for entity in grounded_candidates
+            if entity.bounds_min[2] - floor_z > max_gap
+        ]
+        floating_fraction = len(floating) / max(1, len(grounded_candidates))
+        max_floating_fraction = float(
+            self.get_parameter("max_floating_ground_object_fraction").value
+        )
+        if floating_fraction > max_floating_fraction:
+            examples = ", ".join(
+                f"{entity.label}@z={entity.bounds_min[2]:.2f}"
+                for entity in sorted(
+                    floating,
+                    key=lambda value: value.bounds_min[2],
+                    reverse=True,
+                )[:4]
+            )
+            return (
+                "unsafe geometry: "
+                f"{len(floating)}/{len(grounded_candidates)} floor-supported "
+                f"objects float more than {max_gap:.2f} m ({examples})"
+            ), summary
+
         forbidden = {
             normalize_label(value)
             for value in self.get_parameter("forbidden_object_labels").value
@@ -1384,9 +1618,10 @@ class SceneGraphAdapter(Node):
                 response.message = "no scene graph is available"
                 return response
             error, summary = self._validate_graph()
-        # Graph-quality checks are advisory. A sparse or imperfect graph is
-        # still valuable mapping output and must never be blocked from saving.
-        response.success = True
+        # Coverage and semantic-density checks remain advisory: partial maps
+        # can still be useful.  Invalid object geometry is different because
+        # downstream navigation and manipulation would consume false poses.
+        response.success = not error.startswith("unsafe geometry:")
         response.message = (
             f"scene graph quality warning: {error}; {summary}"
             if error

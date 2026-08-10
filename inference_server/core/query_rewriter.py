@@ -27,11 +27,11 @@ AVAILABLE ACTIONS (use ONLY these exact names):
 
 IMPORTANT EXECUTION CONSTRAINTS:
 - NavigateSemantic uses the persistent graph for the long-range approach to a named source or destination.
-- PlaceObject performs one final local surface/depth estimate after the robot has approached the destination.
+- PlaceObject uses support geometry resolved from the scene graph after the robot has approached the destination.
 - For a named place target, use NavigateSemantic for that target immediately before PlaceObject.
 - Do NOT add DetectObject, ComputePathToPose, FollowPath, or NavigateToPose before PlaceObject.
 - Use NavigateSemantic for named rooms and remembered objects. Never invent metric coordinates or Hydra node IDs.
-- For pickup, NavigateSemantic resolves the source through Hydra or one live navigation fallback, then PickObject grasps. Runtime reuses a fallback detection pose rather than detecting twice.
+- For pickup, NavigateSemantic resolves the source through Hydra or one live navigation fallback with reacquire=true, then PickObject performs a fresh close-range measurement and grasps.
 - Use NavigateToPose only when the user explicitly supplies a metric pose.
 
 AVAILABLE CONDITIONS (use when the task requires checking state):
@@ -44,9 +44,10 @@ CONTROL STRUCTURES:
 - Retry: RetryUntilSuccessful with num_attempts
 - Repeat: Repeat with num_cycles
 
-OUTPUT FORMAT - Output EXACTLY these 3 lines, nothing else:
+OUTPUT FORMAT - Output EXACTLY these 4 lines, nothing else:
 Actions: <comma-separated action names>
 Structure: <control structure>
+SemanticRefs: <one entity_ref="room:label" or entity_ref="object:label" for every NavigateSemantic, in action order; or none>
 Description: <what the tree does>
 
 EXAMPLES:
@@ -54,43 +55,58 @@ EXAMPLES:
 Command: "rotate left 90 degrees"
 Actions: SpinLeft
 Structure: Sequence
+SemanticRefs: none
 Description: The behavior tree performs a left rotation of 90 degrees using SpinLeft with spin_dist=1.57 radians.
 
 Command: "move forward 2 meters then wait 5 seconds"
 Actions: DriveOnHeading, Wait
 Structure: Sequence
+SemanticRefs: none
 Description: The behavior tree executes a sequence where the robot first moves forward 2 meters using DriveOnHeading with dist_to_travel=2.0, then pauses for 5 seconds using Wait with wait_duration=5.
 
 Command: "pick up the red cup"
 Actions: NavigateSemantic, PickObject
 Structure: Sequence
+SemanticRefs: entity_ref="object:red cup"
 Description: NavigateSemantic first approaches entity_ref="object:red cup" using scene-graph memory. PickObject then tilts the head, performs one fresh local detection, and grasps the red cup.
+
+Command: "pick up the blue ball then place it on the box"
+Actions: NavigateSemantic, PickObject, NavigateSemantic, PlaceObject
+Structure: Sequence
+SemanticRefs: entity_ref="object:blue ball", entity_ref="object:box"
+Description: NavigateSemantic approaches entity_ref="object:blue ball", PickObject grasps it, NavigateSemantic approaches entity_ref="object:box", and PlaceObject places the held object.
 
 Command: "try to pick up the cube, retry 3 times if it fails"
 Actions: PickObject, BackUp
 Structure: Retry
+SemanticRefs: none
 Description: The behavior tree wraps PickObject in a RetryUntilSuccessful decorator with num_attempts=3, with BackUp as recovery action.
 
 Command: "navigate to the kitchen, if stuck back up and try again"
 Actions: NavigateSemantic, BackUp
 Structure: Fallback
+SemanticRefs: entity_ref="room:kitchen"
 Description: The behavior tree uses a Fallback containing NavigateSemantic with entity_ref="room:kitchen". If navigation fails, it executes BackUp to recover, then retries.
 
 Command: "go to charging station, but if battery is not low just wait"
 Actions: NavigateSemantic, Wait, IsBatteryLow
 Structure: Fallback
+SemanticRefs: entity_ref="room:charging station"
 Description: The behavior tree uses a Fallback. First checks IsBatteryLow condition - if true, NavigateSemantic uses entity_ref="room:charging station". If battery is fine, just Wait.
 
 Command: "place the object on the green bin"
 Actions: NavigateSemantic, PlaceObject
 Structure: Sequence
-Description: NavigateSemantic approaches entity_ref="object:green bin" using scene-graph memory. PlaceObject then performs one local surface/depth estimate and places the held object.
+SemanticRefs: entity_ref="object:green bin"
+Description: NavigateSemantic approaches entity_ref="object:green bin" using scene-graph memory. PlaceObject then uses the resolved support geometry and places the held object.
 
 RULES:
-1. Output ONLY the 3 lines (Actions, Structure, Description) - no explanations, no options, no questions
+1. Output ONLY the 4 lines (Actions, Structure, SemanticRefs, Description) - no explanations, no options, no questions
 2. Actions must be from the available list - approximate if needed, never refuse
 3. If a requested condition isn't available, use the closest match or omit it
-4. Always produce valid output - never ask for clarification"""
+4. SemanticRefs must contain exactly one typed entity_ref for each NavigateSemantic, in the same order
+5. Copy each semantic label from the command; never replace it with an example or generic term
+6. Always produce valid output - never ask for clarification"""
 
 REWRITE_USER_TEMPLATE = """Command: {command}"""
 

@@ -25,7 +25,7 @@ import tf2_ros
 
 from btgencobot_interfaces.msg import ExplorationStatus
 
-from .frontiers import cell_to_world, extract_frontiers
+from .frontiers import cell_to_world, extract_frontiers, select_coverage_goal
 
 
 class FrontierExplorer(Node):
@@ -43,11 +43,19 @@ class FrontierExplorer(Node):
         self.declare_parameter("distance_weight", 12.0)
         self.declare_parameter("no_frontier_cycles_to_finish", 6)
         self.declare_parameter("minimum_known_cells", 500)
+        self.declare_parameter("semantic_coverage", True)
+        self.declare_parameter("semantic_coverage_radius_m", 2.0)
+        self.declare_parameter("semantic_coverage_stride_m", 0.5)
+        self.declare_parameter("semantic_coverage_min_cells", 80)
         self.declare_parameter("speed_multiplier", 2.0)
         self.declare_parameter("head_sweep", True)
         self.declare_parameter("head_sweep_step_sec", 2.0)
         self.declare_parameter("observation_settle_sec", 2.0)
         self.declare_parameter("navigation_timeout_sec", 90.0)
+        self.declare_parameter("no_motion_timeout_sec", 15.0)
+        self.declare_parameter("no_motion_translation_m", 0.05)
+        self.declare_parameter("no_motion_rotation_rad", 0.12)
+        self.declare_parameter("max_consecutive_no_motion", 3)
         self.declare_parameter("require_navigation_posture", False)
 
         self._map: OccupancyGrid | None = None
@@ -68,6 +76,10 @@ class FrontierExplorer(Node):
         self._navigation_posture_ready = False
         self._initial_observation_done = False
         self._observation_until = 0.0
+        self._goal_kind = "frontier"
+        self._last_progress_pose: tuple[float, float, float] | None = None
+        self._last_progress_at = 0.0
+        self._consecutive_no_motion = 0
 
         latched = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -122,16 +134,63 @@ class FrontierExplorer(Node):
     def _navigation_posture_callback(self, msg: Bool) -> None:
         self._navigation_posture_ready = bool(msg.data)
 
-    def _robot_position(self) -> tuple[float, float]:
+    def _robot_pose(self) -> tuple[float, float, float]:
         transform = self._tf_buffer.lookup_transform(
             str(self.get_parameter("map_frame").value),
             str(self.get_parameter("robot_frame").value),
             Time(),
             timeout=Duration(seconds=0.25),
         )
+        rotation = transform.transform.rotation
+        yaw = math.atan2(
+            2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
+            1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z),
+        )
         return (
             float(transform.transform.translation.x),
             float(transform.transform.translation.y),
+            yaw,
+        )
+
+    def _robot_position(self) -> tuple[float, float]:
+        x, y, _ = self._robot_pose()
+        return x, y
+
+    def _goal_has_made_progress(self) -> bool:
+        """Update the live motion watchdog and report recent base progress."""
+        try:
+            pose = self._robot_pose()
+        except Exception:
+            # TF outages have their own Nav2 failure path and must not be
+            # mistaken for a physically stationary base.
+            self._last_progress_at = time.monotonic()
+            return True
+        if self._last_progress_pose is None:
+            self._last_progress_pose = pose
+            self._last_progress_at = time.monotonic()
+            return True
+        translation = math.hypot(
+            pose[0] - self._last_progress_pose[0],
+            pose[1] - self._last_progress_pose[1],
+        )
+        rotation = abs(
+            math.atan2(
+                math.sin(pose[2] - self._last_progress_pose[2]),
+                math.cos(pose[2] - self._last_progress_pose[2]),
+            )
+        )
+        if (
+            translation
+            >= float(self.get_parameter("no_motion_translation_m").value)
+            or rotation
+            >= float(self.get_parameter("no_motion_rotation_rad").value)
+        ):
+            self._last_progress_pose = pose
+            self._last_progress_at = time.monotonic()
+            return True
+        return (
+            time.monotonic() - self._last_progress_at
+            < float(self.get_parameter("no_motion_timeout_sec").value)
         )
 
     @staticmethod
@@ -264,6 +323,27 @@ class FrontierExplorer(Node):
             )
             if (
                 self._active_goal is not None
+                and not self._goal_has_made_progress()
+                and not self._goal_cancel_requested
+            ):
+                self._consecutive_no_motion += 1
+                self._goal_cancel_requested = True
+                self.get_logger().error(
+                    "Robot pose did not move while Nav2 was active; canceling "
+                    f"goal ({self._consecutive_no_motion}/"
+                    f"{int(self.get_parameter('max_consecutive_no_motion').value)})"
+                )
+                self._active_goal.cancel_goal_async()
+                if self._consecutive_no_motion >= int(
+                    self.get_parameter("max_consecutive_no_motion").value
+                ):
+                    self._finish(
+                        "Exploration stopped safely: the simulated base remained "
+                        "immobile across multiple navigation goals"
+                    )
+                return
+            if (
+                self._active_goal is not None
                 and elapsed >= timeout
                 and not self._goal_cancel_requested
             ):
@@ -276,7 +356,7 @@ class FrontierExplorer(Node):
             self._publish_status(
                 ExplorationStatus.EXPLORING,
                 (
-                    f"Navigating to frontier ({elapsed:.0f}s/"
+                    f"Navigating to {self._goal_kind} ({elapsed:.0f}s/"
                     f"{timeout:.0f}s)"
                 ),
             )
@@ -323,6 +403,7 @@ class FrontierExplorer(Node):
 
         if not self._initial_observation_done:
             self._initial_observation_done = True
+            self._visited.append(robot)
             self._observation_until = (
                 time.monotonic() + self._send_head_sweep()
             )
@@ -358,6 +439,20 @@ class FrontierExplorer(Node):
 
         self._last_frontier_count = len(candidates)
         if not candidates:
+            coverage_target = self._semantic_coverage_target(
+                grid,
+                msg,
+                robot,
+                clearance_cells,
+            )
+            if coverage_target is not None:
+                self._no_frontier_cycles = 0
+                self._send_navigation_goal(
+                    coverage_target,
+                    robot,
+                    "semantic-coverage",
+                )
+                return
             self._no_frontier_cycles += 1
             if (
                 known_cells
@@ -379,8 +474,76 @@ class FrontierExplorer(Node):
             return
 
         self._no_frontier_cycles = 0
-        self._apply_speed_profile(True)
         _, _, point = max(candidates, key=lambda candidate: candidate[0])
+        self._send_navigation_goal(point, robot, "frontier")
+
+    def _semantic_coverage_target(
+        self,
+        grid: np.ndarray,
+        msg: OccupancyGrid,
+        robot: tuple[float, float],
+        clearance_cells: int,
+    ) -> tuple[float, float] | None:
+        if not bool(self.get_parameter("semantic_coverage").value):
+            return None
+
+        def to_cell(point: tuple[float, float]) -> tuple[int, int]:
+            return (
+                int((point[1] - msg.info.origin.position.y) / msg.info.resolution),
+                int((point[0] - msg.info.origin.position.x) / msg.info.resolution),
+            )
+
+        goal_cell = select_coverage_goal(
+            grid,
+            [to_cell(point) for point in self._visited],
+            to_cell(robot),
+            clearance_cells=clearance_cells,
+            coverage_radius_cells=max(
+                1,
+                int(
+                    float(
+                        self.get_parameter("semantic_coverage_radius_m").value
+                    )
+                    / msg.info.resolution
+                ),
+            ),
+            candidate_stride_cells=max(
+                1,
+                int(
+                    float(
+                        self.get_parameter("semantic_coverage_stride_m").value
+                    )
+                    / msg.info.resolution
+                ),
+            ),
+            min_uncovered_cells=int(
+                self.get_parameter("semantic_coverage_min_cells").value
+            ),
+            excluded_cells=[to_cell(point) for point in self._blacklisted],
+            exclusion_radius_cells=max(
+                1,
+                int(
+                    float(self.get_parameter("blacklist_radius_m").value)
+                    / msg.info.resolution
+                ),
+            ),
+        )
+        if goal_cell is None:
+            return None
+        return cell_to_world(
+            goal_cell,
+            msg.info.resolution,
+            msg.info.origin.position.x,
+            msg.info.origin.position.y,
+        )
+
+    def _send_navigation_goal(
+        self,
+        point: tuple[float, float],
+        robot: tuple[float, float],
+        kind: str,
+    ) -> None:
+        self._apply_speed_profile(True)
         yaw = math.atan2(point[1] - robot[1], point[0] - robot[0])
         pose = PoseStamped()
         pose.header.frame_id = str(self.get_parameter("map_frame").value)
@@ -396,13 +559,16 @@ class FrontierExplorer(Node):
         self._goal_pending = True
         self._goal_started_at = time.monotonic()
         self._goal_cancel_requested = False
+        self._goal_kind = kind
+        self._last_progress_pose = (robot[0], robot[1], 0.0)
+        self._last_progress_at = time.monotonic()
         future = self._nav_client.send_goal_async(goal)
         future.add_done_callback(
             lambda result, target=point: self._goal_response(result, target)
         )
         self._publish_status(
             ExplorationStatus.EXPLORING,
-            f"Sending frontier goal ({point[0]:.2f}, {point[1]:.2f})",
+            f"Sending {kind} goal ({point[0]:.2f}, {point[1]:.2f})",
         )
 
     def _goal_response(self, future, target: tuple[float, float]) -> None:
@@ -436,11 +602,15 @@ class FrontierExplorer(Node):
         self._goal_pending = False
         self._goal_started_at = 0.0
         self._goal_cancel_requested = False
+        self._last_progress_pose = None
+        self._last_progress_at = 0.0
         self._active_goal_pose = PoseStamped()
         if status == 4:
+            self._consecutive_no_motion = 0
             self._visited.append(target)
             self.get_logger().info(
-                f"Visited frontier ({target[0]:.2f}, {target[1]:.2f})"
+                f"Visited {self._goal_kind} viewpoint "
+                f"({target[0]:.2f}, {target[1]:.2f})"
             )
             self._observation_until = (
                 time.monotonic() + self._send_head_sweep()

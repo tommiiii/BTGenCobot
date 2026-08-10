@@ -45,12 +45,26 @@ ros2 launch bt_bringup robot_bt_mapping.launch.py \
   exploration_speed_multiplier:=1.0
 ```
 
-The frontier explorer drives the robot without teleoperation, sweeps the head
-at viewpoints, holds still while semantic observations are captured, and
-temporarily adjusts the Nav2 motion limits. The visual taxonomy preserves
-ADE20K object classes such as `ball`, `bottle`, and `plaything` instead of
-collapsing them into generic or incorrect labels. The multiplier is capped at
-2.5 and the normal limits are restored when exploration stops.
+The frontier explorer drives the robot without teleoperation, holds a calibrated
+forward/downward head pose, pauses at viewpoints while semantic observations are
+captured, and then runs a camera-coverage pass after lidar frontiers are
+exhausted. Hydra treats camera extrinsics as rigid, so mapping deliberately gets
+additional views by moving and rotating the base rather than actuating TIAGo's
+head. RGB-D publication is interlocked until the torso and head reach that
+calibrated posture. The coverage selector only chooses viewpoints in the
+robot-connected free-space component, preventing repeated navigation timeouts
+to disconnected map islands.
+
+The visual taxonomy preserves Hydra's upstream ADE20K indoor grouping. It
+retains actionable categories such as tables, chairs, beds, shelves, storage,
+couches, lights, and appliances while mapping visually unstable fine classes
+into robust structural or generic groups. As in MIT-SPARK's
+`semantic_inference`, SegFormer selects the ADE20K class first and that label ID
+is then recolored into Hydra's compact indoor space. Hydra's reconstructed 3D
+mesh—not a project-specific 2D depth heuristic—determines which semantic
+regions become objects. There is no house-specific remap or task object list.
+The multiplier is capped at 2.5 and normal limits are restored when exploration
+stops.
 
 After exploration reports completion, save both persistent artifacts in one
 operation:
@@ -63,7 +77,9 @@ ros2 run semantic_exploration save_mapping_state \
 This writes the SLAM map under `maps/` and the DSG under
 `hydra_data/house_pick_and_place/`. The Hydra adapter loads the saved DSG on
 future runs and republishes one complete, latched DSG snapshot for the Hydra
-visualizer.
+visualizer. Saving is transactional. A candidate with a systematic floating
+furniture geometry error is rejected instead of replacing the last usable DSG;
+near-identical same-class Hydra segments are collapsed in the canonical graph.
 
 In Foxglove, add `/hydra_visualizer/graph` as a `MarkerArray` in the 3D panel
 and use `map` as the fixed frame. The `dynamic_objects` topic is only for

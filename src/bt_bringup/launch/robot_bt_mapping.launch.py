@@ -113,6 +113,17 @@ def generate_launch_description():
         output='screen',
     )
 
+    fresh_mapping_session = Node(
+        package='bt_bringup',
+        executable='mapping_session_publisher.py',
+        name='mapping_session_publisher',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'mapping_complete': False,
+        }],
+        output='screen',
+    )
+
     slam_launch = TimerAction(
         period=8.0,
         actions=[
@@ -150,8 +161,14 @@ def generate_launch_description():
                 name='hydra_semantic_segmentation',
                 parameters=[{
                     'use_sim_time': use_sim_time,
-                    'max_rate_hz': 2.0,
+                    # The node keeps the newest synchronized frame while
+                    # inference runs; 1 Hz is sufficient for Hydra voxel
+                    # fusion and avoids CPU saturation during exploration.
+                    'max_rate_hz': 1.0,
                     'device': 'auto',
+                    # Hydra uses a fixed sensor-to-body transform. Do not emit
+                    # mapping frames until torso and head reach that calibration.
+                    'require_mapping_posture': True,
                 }],
                 output='screen',
             )
@@ -186,6 +203,9 @@ def generate_launch_description():
                     'use_sim_time': use_sim_time,
                     'speed_multiplier': exploration_speed_multiplier,
                     'require_navigation_posture': 'true',
+                    # Base viewpoints provide coverage; moving TIAGo's head
+                    # would invalidate Hydra's rigid camera extrinsics.
+                    'head_sweep': 'false',
                 }.items(),
             )
         ],
@@ -289,6 +309,7 @@ def generate_launch_description():
             args=[profiles_file],
         ),
         environment_publisher,
+        fresh_mapping_session,
         gazebo_launch,
         slam_launch,
         nav2_launch,

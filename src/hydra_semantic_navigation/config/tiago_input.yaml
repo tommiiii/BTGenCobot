@@ -11,6 +11,14 @@ input:
       sensor:
         type: camera_info
         min_range: 0.35
-        max_range: 5.0
+        # Keep the useful indoor range while avoiding poorly constrained
+        # silhouettes at the RGB-D far limit.
+        max_range: 4.5
+        # Hydra's ROS extrinsics loader samples TF once and then treats the
+        # result as rigid. TIAGo's camera is mounted on an actuated head, so use
+        # the calibrated mapping posture explicitly and keep that posture fixed.
         extrinsics:
-          type: ros
+          type: param
+          body_p_sensor: [0.238, 0.047, 1.181]
+          body_R_sensor:
+            {w: -0.4053092, x: 0.5794173, y: -0.5794173, z: 0.4053092}
