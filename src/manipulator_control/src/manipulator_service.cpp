@@ -7,6 +7,7 @@
 #include <std_srvs/srv/empty.hpp>
 #include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <play_motion2_msgs/action/play_motion2.hpp>
+#include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
 
@@ -304,7 +305,7 @@ private:
       required_position - *current_position, "pre-grasp torso reserve");
   }
 
-  bool get_tool_to_grasp_reach(double & reach)
+  bool get_tool_to_grasp_transform(Eigen::Isometry3d & tool_to_grasp)
   {
     moveit::core::RobotStatePtr current_state = move_group_arm_->getCurrentState();
     if (!current_state) {
@@ -320,11 +321,53 @@ private:
         "Robot model is missing arm_tool_link or gripper_grasping_frame");
       return false;
     }
-    const Eigen::Isometry3d tool_to_grasp =
+    tool_to_grasp =
       current_state->getGlobalLinkTransform(tool_link).inverse() *
       current_state->getGlobalLinkTransform(grasp_link);
-    reach = tool_to_grasp.translation().norm();
-    return std::isfinite(reach) && reach > 0.0;
+    if (!tool_to_grasp.matrix().allFinite()) {
+      RCLCPP_ERROR(this->get_logger(), "Tool-to-grasp transform is not finite");
+      return false;
+    }
+    return true;
+  }
+
+  bool make_tool_pose_for_grasp_center(
+    const geometry_msgs::msg::PoseStamped & target_pose,
+    double vertical_clearance,
+    geometry_msgs::msg::PoseStamped & tool_pose)
+  {
+    Eigen::Isometry3d tool_to_grasp = Eigen::Isometry3d::Identity();
+    if (!get_tool_to_grasp_transform(tool_to_grasp)) {
+      return false;
+    }
+
+    // Keep the proven downward arm_tool_link orientation, but compensate the
+    // complete URDF TCP translation.  Treating this translation as a scalar
+    // finger length silently discards any lateral component of the tool model.
+    const Eigen::Quaterniond world_to_tool(0.70710678, 0.0, 0.70710678, 0.0);
+    const Eigen::Vector3d target_center(
+      target_pose.pose.position.x,
+      target_pose.pose.position.y,
+      target_pose.pose.position.z + vertical_clearance);
+    const Eigen::Vector3d tool_position =
+      target_center - world_to_tool.toRotationMatrix() * tool_to_grasp.translation();
+
+    tool_pose = target_pose;
+    tool_pose.pose.position.x = tool_position.x();
+    tool_pose.pose.position.y = tool_position.y();
+    tool_pose.pose.position.z = tool_position.z();
+    tool_pose.pose.orientation.x = world_to_tool.x();
+    tool_pose.pose.orientation.y = world_to_tool.y();
+    tool_pose.pose.orientation.z = world_to_tool.z();
+    tool_pose.pose.orientation.w = world_to_tool.w();
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "arm_tool_link -> grasp TCP translation [%.3f, %.3f, %.3f] m",
+      tool_to_grasp.translation().x(),
+      tool_to_grasp.translation().y(),
+      tool_to_grasp.translation().z());
+    return tool_position.allFinite();
   }
 
   bool execute_pick(const geometry_msgs::msg::PoseStamped & target_pose)
@@ -352,24 +395,15 @@ private:
       return false;
     }
 
-    // Calculate poses using the robot model's tool-to-grasp transform.
-    double finger_length = 0.0;
-    if (!get_tool_to_grasp_reach(finger_length)) {
+    // Calculate the arm tool pose from the robot model's complete TCP transform.
+    geometry_msgs::msg::PoseStamped grasp_pose;
+    if (!make_tool_pose_for_grasp_center(
+        target_pose,
+        this->get_parameter("pick_grasp_clearance").as_double(),
+        grasp_pose))
+    {
       return false;
     }
-    geometry_msgs::msg::PoseStamped grasp_pose = target_pose;
-    // We command arm_tool_link, which is 'finger_length' above the grasping
-    // frame. Keep the grasp center tied to the measured object center; an
-    // absolute tool-height clamp shifts small floor objects out of the fingers.
-    grasp_pose.pose.position.z =
-      target_pose.pose.position.z +
-      this->get_parameter("pick_grasp_clearance").as_double() + finger_length;
-    // Orientation for arm_tool_link to make gripper point DOWN:
-    // X_arm=UP, Z_arm=FORWARD => q=[0, 0.707, 0, 0.707]
-    grasp_pose.pose.orientation.x = 0.0;
-    grasp_pose.pose.orientation.y = 0.70710678;
-    grasp_pose.pose.orientation.z = 0.0;
-    grasp_pose.pose.orientation.w = 0.70710678;
 
     geometry_msgs::msg::PoseStamped above_pose = grasp_pose;
     // The downward-facing IK is unreliable below about 0.45 m at the ball's
@@ -528,20 +562,17 @@ private:
     move_group_arm_->setPoseReferenceFrame(target_pose.header.frame_id);
     move_group_arm_only_->setPoseReferenceFrame(target_pose.header.frame_id);
 
-    double finger_length = 0.0;
-    if (!get_tool_to_grasp_reach(finger_length)) {
+    geometry_msgs::msg::PoseStamped place_pose;
+    if (!make_tool_pose_for_grasp_center(
+        target_pose,
+        this->get_parameter("place_release_clearance").as_double(),
+        place_pose))
+    {
       return false;
     }
-    geometry_msgs::msg::PoseStamped place_pose = target_pose;
     // Hydra supplies the top of the support geometry.  Keep the grasp center
     // slightly above that surface so the released object settles onto it
     // instead of being commanded through it.
-    place_pose.pose.position.z +=
-      finger_length + this->get_parameter("place_release_clearance").as_double();
-    place_pose.pose.orientation.x = 0.0;
-    place_pose.pose.orientation.y = 0.70710678;
-    place_pose.pose.orientation.z = 0.0;
-    place_pose.pose.orientation.w = 0.70710678;
 
     // Navigation has already positioned the carried object over the selected
     // support.  Keep that proven arm configuration and its XY position: asking

@@ -1,10 +1,11 @@
 #include "bt_nav2_plugins/pick_object.hpp"
+#include "bt_nav2_plugins/rgbd_object_pose.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include "cv_bridge/cv_bridge.hpp"
-#include "tf2/LinearMath/Quaternion.h"
+#include "tf2/LinearMath/Transform.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 using namespace std::chrono_literals;
@@ -33,8 +34,13 @@ PickObject::PickObject(
 
   service_node_ = std::make_shared<rclcpp::Node>("pick_object_service_node");
 
-  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  // Nav2's long-lived buffer retains the complete transform history.  Keep a
+  // local fallback for non-Nav2 tests, but do not normally start a fresh TF
+  // buffer immediately before a latency-heavy vision request.
+  if (!config.blackboard->get("tf_buffer", tf_buffer_) || !tf_buffer_) {
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  }
 
   detect_client_ = service_node_->create_client<btgencobot_interfaces::srv::DetectObject>(
     "/detect_object");
@@ -111,6 +117,8 @@ BT::NodeStatus PickObject::onStart()
   pick_response_.reset();
   latest_image_.reset();
   latest_depth_.reset();
+  detection_image_.reset();
+  detection_depth_.reset();
   has_camera_info_ = false;
 
   operation_start_time_ = node_->now();
@@ -255,6 +263,13 @@ BT::NodeStatus PickObject::onRunning()
         cy_ = 240.0;
       }
 
+      // Freeze the exact pair used for this detection.  GroundingDINO can take
+      // long enough for subscription callbacks to receive many newer depth
+      // frames; mixing one of those with the requested RGB image corrupts the
+      // pixel-to-depth correspondence even when their topic timestamps looked
+      // synchronized before the request was sent.
+      detection_image_ = latest_image_;
+      detection_depth_ = latest_depth_;
       state_ = PickState::DETECTING;
       RCLCPP_INFO(
         node_->get_logger(),
@@ -274,7 +289,7 @@ BT::NodeStatus PickObject::onRunning()
         }
 
         auto request = std::make_shared<btgencobot_interfaces::srv::DetectObject::Request>();
-        request->image = *latest_image_;
+        request->image = *detection_image_;
         request->object_description = object_description_;
         request->box_threshold = static_cast<float>(box_threshold_);
 
@@ -299,89 +314,27 @@ BT::NodeStatus PickObject::onRunning()
         return BT::NodeStatus::FAILURE;
       }
 
-      float depth = 0.3f;
-      float rcx = detection_response_->center_x;
-      float rcy = detection_response_->center_y;
-
-      if (latest_depth_) {
-        try {
-          auto dp = cv_bridge::toCvCopy(latest_depth_, sensor_msgs::image_encodings::TYPE_32FC1);
-          struct DS { float d; int x; int y; };
-          std::vector<DS> samples;
-
-          if (detection_response_->bbox.size() >= 4) {
-            int x1 = std::max(0, std::min((int)detection_response_->bbox[0], dp->image.cols-1));
-            int y1 = std::max(0, std::min((int)detection_response_->bbox[1], dp->image.rows-1));
-            int x2 = std::max(0, std::min((int)detection_response_->bbox[2], dp->image.cols-1));
-            int y2 = std::max(0, std::min((int)detection_response_->bbox[3], dp->image.rows-1));
-            int mx = (x2-x1)*0.10, my = (y2-y1)*0.10;
-            for (int y = y1+my; y <= y2-my; y+=2)
-              for (int x = x1+mx; x <= x2-mx; x+=2) {
-                float d = dp->image.at<float>(y,x);
-                if (d > 10.0) {
-                  d = d / 1000.0;
-                }
-                if (!std::isnan(d) && d > 0.1 && d < 10.0) samples.push_back({d,x,y});
-              }
-          }
-
-          if (!samples.empty()) {
-            std::sort(samples.begin(), samples.end(), [](const DS& a, const DS& b){ return a.d < b.d; });
-            float md = samples.front().d;
-            float tol = std::max(0.05f, md*0.15f);
-            std::vector<DS> obj;
-            for (auto& s : samples) if (s.d <= md+tol) { obj.push_back(s); }
-            if (!obj.empty()) {
-              // The nearest-depth cluster is reliable for range, but its pixel
-              // centroid is easily skewed by occlusion and depth shadows. Keep
-              // the detector's box center as the grasp ray to avoid lateral drift.
-              std::sort(obj.begin(), obj.end(), [](const DS& a, const DS& b){ return a.d < b.d; });
-              depth = obj[obj.size()/2].d;
-            }
-          }
-        } catch (const std::exception& e) {
-          RCLCPP_WARN(node_->get_logger(), "PickObject: Depth failed: %s", e.what());
-        }
-      }
-
-      if (detection_response_->bbox.size() >= 4 && depth > 0) {
-        float bw = detection_response_->bbox[2] - detection_response_->bbox[0];
-        float bh = detection_response_->bbox[3] - detection_response_->bbox[1];
-        object_width_ = (bw * depth) / fx_;
-        object_height_ = (bh * depth) / fy_;
-
-        // Registered depth at the detector center measures the visible front
-        // surface. For compact objects, estimate the 3D center by advancing
-        // half the smaller projected extent along the same camera ray. Using
-        // the smaller extent avoids over-correcting elongated objects and,
-        // unlike a fixed XY offset, remains valid as the camera/head moves.
-        const float estimated_diameter = std::min(object_width_, object_height_);
-        const float surface_depth = depth;
-        depth += 0.5f * estimated_diameter;
-        RCLCPP_INFO(
+      if (!estimateObjectPose()) {
+        RCLCPP_ERROR(
           node_->get_logger(),
-          "PickObject: front surface %.3fm, projected extent %.3fm, center depth %.3fm",
-          surface_depth, estimated_diameter, depth);
+          "PickObject: registered RGB-D data did not yield a valid object pose");
+        return BT::NodeStatus::FAILURE;
       }
-
-      std::string cf = latest_image_->header.frame_id;
-      if (cf.empty()) cf = "head_front_camera_depth_optical_frame";
-      object_pose_ = computeObjectPose(rcx, rcy, depth, cf);
 
       RCLCPP_INFO(
         node_->get_logger(),
         "PickObject: DETECTION DIAGNOSTICS:"
         "\n  bbox: [%.0f, %.0f, %.0f, %.0f]"
-        "\n  center: (%.1f, %.1f) -> refined: (%.1f, %.1f)"
-        "\n  center depth: %.3fm  fx: %.2f  fy: %.2f  cx: %.2f  cy: %.2f"
-        "\n  object_pose (map): (%.3f, %.3f, %.3f)"
+        "\n  detector center: (%.1f, %.1f)"
+        "\n  fx: %.2f  fy: %.2f  cx: %.2f  cy: %.2f"
+        "\n  object_pose (base_footprint): (%.3f, %.3f, %.3f)"
         "\n  has_camera_info: %s",
         detection_response_->bbox.size() >= 4 ? detection_response_->bbox[0] : 0,
         detection_response_->bbox.size() >= 4 ? detection_response_->bbox[1] : 0,
         detection_response_->bbox.size() >= 4 ? detection_response_->bbox[2] : 0,
         detection_response_->bbox.size() >= 4 ? detection_response_->bbox[3] : 0,
         detection_response_->center_x, detection_response_->center_y,
-        rcx, rcy, depth, fx_, fy_, cx_, cy_,
+        fx_, fy_, cx_, cy_,
         object_pose_.pose.position.x, object_pose_.pose.position.y, object_pose_.pose.position.z,
         has_camera_info_ ? "YES" : "NO");
 
@@ -486,6 +439,7 @@ void PickObject::onHalted()
   head_settle_until_ = rclcpp::Time(0);
   detection_sent_ = false; detection_received_ = false; detection_response_.reset();
   pick_sent_ = false; pick_received_ = false; pick_response_.reset();
+  detection_image_.reset(); detection_depth_.reset();
 }
 
 void PickObject::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
@@ -506,32 +460,159 @@ void PickObject::cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPt
   }
 }
 
-geometry_msgs::msg::PoseStamped PickObject::computeObjectPose(
-  float cx, float cy, float d, const std::string & frame_id)
+bool PickObject::estimateObjectPose()
 {
-  double x = (cx - cx_) * d / fx_;
-  double y = (cy - cy_) * d / fy_;
-
-  geometry_msgs::msg::PoseStamped pc;
-  pc.header.frame_id = frame_id;
-  pc.header.stamp = node_->now();
-  pc.pose.position.x = x; pc.pose.position.y = y; pc.pose.position.z = d;
-  pc.pose.orientation.w = 1.0;
-
-  try {
-    auto pm = tf_buffer_->transform(pc, "map", tf2::durationFromSec(1.0));
-    try {
-      auto rt = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
-      double dy = pm.pose.position.y - rt.transform.translation.y;
-      double dx = pm.pose.position.x - rt.transform.translation.x;
-      tf2::Quaternion q; q.setRPY(0, 0, std::atan2(dy, dx));
-      pm.pose.orientation = tf2::toMsg(q);
-    } catch (...) {}
-    return pm;
-  } catch (const tf2::TransformException & ex) {
-    RCLCPP_ERROR(node_->get_logger(), "TF failed: %s", ex.what());
-    return pc;
+  if (!detection_response_ || !detection_image_ || !detection_depth_ ||
+      detection_response_->bbox.size() < 4 || fx_ <= 0.0 || fy_ <= 0.0)
+  {
+    return false;
   }
+  try {
+    auto depth_image = cv_bridge::toCvCopy(
+      detection_depth_, sensor_msgs::image_encodings::TYPE_32FC1);
+    const int columns = depth_image->image.cols;
+    const int rows = depth_image->image.rows;
+    int x1 = std::clamp(static_cast<int>(std::floor(detection_response_->bbox[0])), 0, columns - 1);
+    int y1 = std::clamp(static_cast<int>(std::floor(detection_response_->bbox[1])), 0, rows - 1);
+    int x2 = std::clamp(static_cast<int>(std::ceil(detection_response_->bbox[2])), 0, columns - 1);
+    int y2 = std::clamp(static_cast<int>(std::ceil(detection_response_->bbox[3])), 0, rows - 1);
+    if (x2 <= x1 || y2 <= y1) {
+      return false;
+    }
+    const std::string description = rgbd_pose::lowercase(object_description_);
+    const bool spherical =
+      description.find("ball") != std::string::npos ||
+      description.find("sphere") != std::string::npos;
+    const bool vertical_round =
+      description.find("can") != std::string::npos ||
+      description.find("coke") != std::string::npos ||
+      description.find("bottle") != std::string::npos ||
+      description.find("cylinder") != std::string::npos;
+    // The corners of a tight ball bounding box are support pixels.  An 18%
+    // inset leaves a large inscribed patch of the sphere and prevents those
+    // support points from biasing the model fit.  Rectangular objects retain
+    // almost their full silhouette.
+    const double margin_fraction = spherical ? 0.18 : 0.03;
+    const int margin_x = std::max(1, static_cast<int>((x2 - x1) * margin_fraction));
+    const int margin_y = std::max(1, static_cast<int>((y2 - y1) * margin_fraction));
+    x1 += margin_x;
+    x2 -= margin_x;
+    y1 += margin_y;
+    y2 -= margin_y;
+
+    struct DepthPixel
+    {
+      double depth;
+      int x;
+      int y;
+    };
+    std::vector<DepthPixel> samples;
+    std::vector<double> depths;
+    samples.reserve(static_cast<std::size_t>((x2 - x1 + 1) * (y2 - y1 + 1)));
+    for (int y = y1; y <= y2; ++y) {
+      for (int x = x1; x <= x2; ++x) {
+        double depth = static_cast<double>(depth_image->image.at<float>(y, x));
+        if (depth > 10.0) {
+          depth /= 1000.0;
+        }
+        if (std::isfinite(depth) && depth > 0.1 && depth < 10.0) {
+          samples.push_back({depth, x, y});
+          depths.push_back(depth);
+        }
+      }
+    }
+    if (samples.size() < 16) {
+      return false;
+    }
+
+    const double maximum_depth_span = spherical ? 0.065 : (vertical_round ? 0.16 : 0.10);
+    const double depth_limit =
+      rgbd_pose::foregroundDepthLimit(depths, maximum_depth_span);
+
+    std::string camera_frame = detection_image_->header.frame_id;
+    if (camera_frame.empty()) {
+      camera_frame = detection_depth_->header.frame_id;
+    }
+    if (camera_frame.empty()) {
+      camera_frame = "head_front_camera_depth_optical_frame";
+    }
+    // The head and base are stationary throughout local detection.  Using the
+    // latest transform avoids low-real-time-factor extrapolation while the
+    // frozen RGB-D pair preserves all pixel/depth correspondence.
+    const auto transform_message = tf_buffer_->lookupTransform(
+      "base_footprint", camera_frame, tf2::TimePointZero,
+      tf2::durationFromSec(1.0));
+    tf2::Transform camera_to_base;
+    tf2::fromMsg(transform_message.transform, camera_to_base);
+
+    std::vector<rgbd_pose::Point3> object_points;
+    object_points.reserve(samples.size());
+    for (const auto & sample : samples) {
+      if (sample.depth > depth_limit) {
+        continue;
+      }
+      const tf2::Vector3 camera_point(
+        (static_cast<double>(sample.x) - cx_) * sample.depth / fx_,
+        (static_cast<double>(sample.y) - cy_) * sample.depth / fy_,
+        sample.depth);
+      const tf2::Vector3 base_point = camera_to_base * camera_point;
+      object_points.push_back({base_point.x(), base_point.y(), base_point.z()});
+    }
+    if (object_points.size() < 16) {
+      return false;
+    }
+
+    rgbd_pose::Point3 center;
+    rgbd_pose::Point3 dimensions;
+    std::string estimator = "robust 3D bounds";
+    bool fitted = false;
+    if (spherical) {
+      double radius = 0.0;
+      fitted = rgbd_pose::fitSphereCenter(object_points, center, radius);
+      if (fitted) {
+        dimensions = {2.0 * radius, 2.0 * radius, 2.0 * radius};
+        estimator = "sphere fit";
+      }
+    } else if (vertical_round) {
+      const auto & translation = transform_message.transform.translation;
+      const rgbd_pose::Point3 camera_origin{translation.x, translation.y, translation.z};
+      double radius = 0.0;
+      double height = 0.0;
+      fitted = rgbd_pose::fitVerticalRoundCenter(
+        object_points, camera_origin, center, radius, height);
+      if (fitted) {
+        dimensions = {2.0 * radius, 2.0 * radius, height};
+        estimator = "upright-cylinder fit";
+      }
+    }
+    if (!fitted && !rgbd_pose::robustBoundsCenter(object_points, center, dimensions)) {
+      return false;
+    }
+
+    object_pose_.header.frame_id = "base_footprint";
+    object_pose_.header.stamp = rclcpp::Time(0);
+    object_pose_.pose.position.x = center.x;
+    object_pose_.pose.position.y = center.y;
+    object_pose_.pose.position.z = center.z;
+    object_pose_.pose.orientation.x = 0.0;
+    object_pose_.pose.orientation.y = 0.0;
+    object_pose_.pose.orientation.z = 0.0;
+    object_pose_.pose.orientation.w = 1.0;
+    object_width_ = std::max(dimensions.x, dimensions.y);
+    object_height_ = dimensions.z;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "PickObject: %s used %zu/%zu foreground depth points; dimensions "
+      "[%.3f, %.3f, %.3f] m",
+      estimator.c_str(), object_points.size(), samples.size(),
+      dimensions.x, dimensions.y, dimensions.z);
+    return true;
+  } catch (const tf2::TransformException & exception) {
+    RCLCPP_ERROR(node_->get_logger(), "PickObject: TF failed: %s", exception.what());
+  } catch (const std::exception & exception) {
+    RCLCPP_ERROR(node_->get_logger(), "PickObject: RGB-D pose estimation failed: %s", exception.what());
+  }
+  return false;
 }
 
 }  // namespace bt_nav2_plugins

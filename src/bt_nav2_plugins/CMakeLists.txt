@@ -60,6 +60,16 @@ target_link_libraries(bt_nav2_plugins
 
 target_compile_definitions(bt_nav2_plugins PRIVATE BT_PLUGIN_EXPORT)
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_rgbd_object_pose test/test_rgbd_object_pose.cpp)
+  target_include_directories(test_rgbd_object_pose PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
+  )
+  target_link_libraries(test_rgbd_object_pose ${OpenCV_LIBRARIES})
+endif()
+
 # Install
 install(TARGETS
     bt_nav2_plugins

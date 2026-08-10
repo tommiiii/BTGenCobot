@@ -73,12 +73,8 @@ private:
     double duration_sec,
     std::shared_future<GoalHandle::SharedPtr> & out_future);
 
-  // Convert detection result to 3D pose
-  geometry_msgs::msg::PoseStamped computeObjectPose(
-    float center_x,
-    float center_y,
-    float depth_value,
-    const std::string & frame_id);
+  // Estimate the object's geometric center from the frozen registered RGB-D frame.
+  bool estimateObjectPose();
 
   // Nav2's node for logging
   rclcpp::Node::SharedPtr node_;
@@ -105,6 +101,8 @@ private:
   // Latest camera data
   sensor_msgs::msg::Image::SharedPtr latest_image_;
   sensor_msgs::msg::Image::SharedPtr latest_depth_;
+  sensor_msgs::msg::Image::SharedPtr detection_image_;
+  sensor_msgs::msg::Image::SharedPtr detection_depth_;
 
   // Camera calibration
   bool has_camera_info_;
