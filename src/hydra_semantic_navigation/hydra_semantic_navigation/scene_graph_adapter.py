@@ -15,8 +15,12 @@ from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
 from hydra_msgs.msg import DsgUpdate
 from nav_msgs.msg import OccupancyGrid
+from nav2_msgs.action import ComputePathToPose
 import numpy as np
+from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
@@ -34,17 +38,14 @@ from .core import (
     ObjectNodeCandidate,
     Place,
     SemanticEntity,
-    choose_best_routable_match,
     conflicting_object_node_ids,
     infer_room_label,
-    nearest_place,
     normalize_label,
     parse_entity_ref,
     parse_node_symbol,
     physically_invalid_object_node_ids,
     rank_entities,
     redundant_object_node_ids,
-    simplify_route,
     split_room_qualified_label,
     support_surface_height,
 )
@@ -126,6 +127,12 @@ class SceneGraphAdapter(Node):
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("robot_frame", "base_footprint")
         self.declare_parameter("navigation_map_topic", "/map")
+        self.declare_parameter(
+            "nav2_compute_path_action", "/compute_path_to_pose"
+        )
+        self.declare_parameter("nav2_planner_id", "GridBased")
+        self.declare_parameter("nav2_plan_timeout_sec", 2.5)
+        self.declare_parameter("max_nav2_candidate_plans", 12)
         self.declare_parameter("navigation_goal_clearance_m", 0.30)
         self.declare_parameter("navigation_goal_projection_radius_m", 1.25)
         self.declare_parameter("navigation_occupied_threshold", 65)
@@ -246,6 +253,8 @@ class SceneGraphAdapter(Node):
         self._room_aliases: dict[str, str] = {}
         self._room_rules: dict[str, object] = {}
         self._semantic_label_names: dict[int, str] = {}
+        self._service_callback_group = ReentrantCallbackGroup()
+        self._planner_callback_group = ReentrantCallbackGroup()
         self._load_grounding_config()
         self._load_semantic_label_space()
         # Persistence is opt-in.  A mapping runtime must never flash an old DSG
@@ -255,6 +264,12 @@ class SceneGraphAdapter(Node):
 
         self._tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=3600.0))
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        self._planner_client = ActionClient(
+            self,
+            ComputePathToPose,
+            str(self.get_parameter("nav2_compute_path_action").value),
+            callback_group=self._planner_callback_group,
+        )
 
         latched = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -320,6 +335,7 @@ class SceneGraphAdapter(Node):
             ResolveSemanticNavigation,
             "/hydra/resolve_semantic_navigation",
             self._resolve_callback,
+            callback_group=self._service_callback_group,
         )
         self.create_service(
             Trigger,
@@ -743,6 +759,7 @@ class SceneGraphAdapter(Node):
             "none",
             "room",
             "unknown",
+            "void",
             "unlabeled",
             "unassigned",
         }
@@ -1012,6 +1029,7 @@ class SceneGraphAdapter(Node):
             return None
         candidate_indices = np.flatnonzero(within_radius)
         semantic_distances: dict[int, float] = {}
+        robot_distances: dict[int, float] = {}
         if semantic_target is not None and target_standoff is not None:
             min_standoff, max_standoff = target_standoff
             standoff_ok = np.zeros(candidate_indices.shape, dtype=bool)
@@ -1025,6 +1043,10 @@ class SceneGraphAdapter(Node):
                     candidate_y - semantic_target[1],
                 )
                 semantic_distances[int(candidate_index)] = distance
+                robot_distances[int(candidate_index)] = math.hypot(
+                    candidate_x - robot[0],
+                    candidate_y - robot[1],
+                )
                 standoff_ok[offset] = (
                     min_standoff <= distance <= max_standoff
                 )
@@ -1042,13 +1064,204 @@ class SceneGraphAdapter(Node):
             best = min(
                 (int(index) for index in candidate_indices),
                 key=lambda index: (
-                    abs(semantic_distances[index] - preferred_standoff),
+                    round(
+                        abs(
+                            semantic_distances[index] - preferred_standoff
+                        ),
+                        2,
+                    ),
+                    robot_distances[index],
                     float(distances[index]),
                 ),
             )
         else:
             best = int(candidate_indices[np.argmin(distances[candidate_indices])])
         return cell_to_world(int(rows[best]), int(cols[best]))
+
+    @staticmethod
+    def _wait_for_future(future, timeout_sec: float):
+        """Wait for an executor-owned future without recursively spinning."""
+        if future.done():
+            return future.result()
+        completed = threading.Event()
+        future.add_done_callback(lambda _future: completed.set())
+        if not completed.wait(max(0.0, timeout_sec)):
+            raise TimeoutError
+        return future.result()
+
+    def _nav2_path_cost(
+        self,
+        start: tuple[float, float, float],
+        goal_xy: tuple[float, float],
+        semantic_target: tuple[float, float, float],
+    ) -> float | None:
+        """Return the length of Nav2's costmap-aware path, or ``None``."""
+        timeout_sec = float(
+            self.get_parameter("nav2_plan_timeout_sec").value
+        )
+        deadline = time.monotonic() + timeout_sec
+        goal = ComputePathToPose.Goal()
+        stamp = self.get_clock().now().to_msg()
+        goal.start.header.frame_id = self._map_frame
+        goal.start.header.stamp = stamp
+        goal.start.pose.position.x = float(start[0])
+        goal.start.pose.position.y = float(start[1])
+        goal.start.pose.position.z = 0.0
+        goal.start.pose.orientation.w = 1.0
+        goal.goal.header.frame_id = self._map_frame
+        goal.goal.header.stamp = stamp
+        goal.goal.pose.position.x = float(goal_xy[0])
+        goal.goal.pose.position.y = float(goal_xy[1])
+        yaw = math.atan2(
+            semantic_target[1] - goal_xy[1],
+            semantic_target[0] - goal_xy[0],
+        )
+        goal.goal.pose.orientation.z = math.sin(yaw / 2.0)
+        goal.goal.pose.orientation.w = math.cos(yaw / 2.0)
+        goal.planner_id = str(self.get_parameter("nav2_planner_id").value)
+        goal.use_start = True
+
+        goal_handle = None
+        try:
+            send_future = self._planner_client.send_goal_async(goal)
+            goal_handle = self._wait_for_future(
+                send_future,
+                deadline - time.monotonic(),
+            )
+            if goal_handle is None or not goal_handle.accepted:
+                return None
+            wrapped_result = self._wait_for_future(
+                goal_handle.get_result_async(),
+                deadline - time.monotonic(),
+            )
+        except TimeoutError:
+            if goal_handle is not None:
+                goal_handle.cancel_goal_async()
+            return None
+        except Exception as exc:
+            self.get_logger().warning(f"Nav2 candidate planning failed: {exc}")
+            return None
+
+        result = wrapped_result.result
+        if int(getattr(result, "error_code", 0)) != 0:
+            return None
+        poses = list(result.path.poses)
+        if not poses:
+            if math.hypot(goal_xy[0] - start[0], goal_xy[1] - start[1]) < 0.05:
+                return 0.0
+            return None
+        return sum(
+            math.hypot(
+                current.pose.position.x - previous.pose.position.x,
+                current.pose.position.y - previous.pose.position.y,
+            )
+            for previous, current in zip(poses, poses[1:])
+        )
+
+    def _choose_nav2_match(
+        self,
+        matches,
+        start_position: tuple[float, float, float],
+        entity_type: str,
+        preferred_id: str,
+    ):
+        """Choose the best semantic instance using Nav2 as route authority.
+
+        Semantic confidence is the primary key. Within an equal-confidence
+        group, candidates are projected to safe manipulation/nav poses and the
+        shortest successful Nav2 plan wins. Euclidean distance is only a lower
+        bound for avoiding plans that provably cannot beat the current winner.
+        """
+        candidates = list(matches)
+        if preferred_id:
+            candidates = [
+                match
+                for match in candidates
+                if match.entity.node_id == preferred_id
+            ]
+            if not candidates:
+                return None, None, None, (
+                    f"preferred entity {preferred_id!r} is not a matching candidate"
+                )
+        if not candidates:
+            return None, None, None, "unknown destination"
+
+        target_standoff = None
+        if entity_type == "object":
+            target_standoff = (
+                float(self.get_parameter("object_standoff_min").value),
+                float(self.get_parameter("object_standoff_max").value),
+            )
+
+        maximum_plans = max(
+            1, int(self.get_parameter("max_nav2_candidate_plans").value)
+        )
+        plans_attempted = 0
+        scores = sorted({match.score for match in candidates}, reverse=True)
+        projected_any = False
+        for score in scores:
+            score_group = [
+                match
+                for match in candidates
+                if math.isclose(match.score, score, abs_tol=1.0e-6)
+            ]
+            projected = []
+            for match in score_group:
+                goal_xy = self._project_navigation_goal(
+                    match.entity.position,
+                    start_position,
+                    match.entity.position if entity_type == "object" else None,
+                    target_standoff,
+                )
+                if goal_xy is None:
+                    continue
+                projected_any = True
+                projected.append(
+                    (
+                        math.hypot(
+                            goal_xy[0] - start_position[0],
+                            goal_xy[1] - start_position[1],
+                        ),
+                        match.entity.node_id,
+                        match,
+                        goal_xy,
+                    )
+                )
+            projected.sort(key=lambda value: (value[0], value[1]))
+
+            best = None
+            for straight_line_cost, _node_id_value, match, goal_xy in projected:
+                if best is not None and straight_line_cost >= best[0] - 1.0e-6:
+                    # A path cannot be shorter than its straight-line lower
+                    # bound, so every remaining candidate is provably worse.
+                    break
+                if plans_attempted >= maximum_plans:
+                    break
+                plans_attempted += 1
+                path_cost = self._nav2_path_cost(
+                    start_position,
+                    goal_xy,
+                    match.entity.position,
+                )
+                if path_cost is None:
+                    continue
+                if best is None or (path_cost, match.entity.node_id) < (
+                    best[0],
+                    best[1].entity.node_id,
+                ):
+                    best = (path_cost, match, goal_xy)
+            if best is not None:
+                return best[1], best[2], best[0], None
+            if plans_attempted >= maximum_plans:
+                break
+
+        if not projected_any:
+            return None, None, None, (
+                "no robot-clear map pose exists near a matching destination"
+            )
+        return None, None, None, (
+            "Nav2 could not plan to any matching destination"
+        )
 
     def _resolve_callback(self, request, response):
         try:
@@ -1119,46 +1332,41 @@ class SceneGraphAdapter(Node):
             response.status = STATUS_UNKNOWN_DESTINATION
             response.error_message = "unknown destination"
             return response
-        try:
-            start_position = self._robot_position()
-        except Exception as exc:
-            response.status = STATUS_INTERNAL_ERROR
-            response.error_message = f"robot pose unavailable: {exc}"
-            return response
-
-        min_clearance = float(self.get_parameter("min_place_clearance").value)
-        if nearest_place(places, start_position, min_clearance) is None:
-            response.status = STATUS_NO_TRAVERSABLE_PLACE
-            response.error_message = "no traversable Hydra place near robot"
-            return response
-
-        target_standoff = None
-        if entity_type == "object":
-            target_standoff = (
-                float(self.get_parameter("object_standoff_min").value),
-                float(self.get_parameter("object_standoff_max").value),
+        if request.use_reference_position:
+            start_position = (
+                float(request.reference_position.x),
+                float(request.reference_position.y),
+                float(request.reference_position.z),
             )
-        match, route, error = choose_best_routable_match(
+        else:
+            try:
+                start_position = self._robot_position()
+            except Exception as exc:
+                response.status = STATUS_INTERNAL_ERROR
+                response.error_message = f"robot pose unavailable: {exc}"
+                return response
+
+        with self._lock:
+            navigation_map_ready = self._navigation_map is not None
+        if not navigation_map_ready:
+            response.status = STATUS_GRAPH_NOT_READY
+            response.error_message = "waiting for the saved navigation map"
+            return response
+        if not self._planner_client.wait_for_server(timeout_sec=0.5):
+            response.status = STATUS_GRAPH_NOT_READY
+            response.error_message = "waiting for the Nav2 planner"
+            return response
+
+        match, projected_target, nav2_path_cost, error = self._choose_nav2_match(
             matches,
-            places,
             start_position,
-            min_clearance,
-            target_standoff,
+            entity_type,
             request.preferred_id,
         )
         if match is None:
-            response.status = STATUS_UNKNOWN_DESTINATION
+            response.status = STATUS_UNREACHABLE
             response.error_message = error or "unknown destination"
             return response
-        if not route:
-            response.status = STATUS_UNREACHABLE
-            response.error_message = (
-                "Hydra place graph has no component connecting robot to "
-                f"selected destination {match.entity.node_id}"
-            )
-            return response
-
-        target_place = places[route[-1]]
 
         stale_after = float(self.get_parameter("object_stale_after_sec").value)
         if (
@@ -1190,36 +1398,21 @@ class SceneGraphAdapter(Node):
                 )
                 return response
 
-        # Both persistent Hydra objects and one-shot detector observations use
-        # the route-selected arm-reachable standoff computed above.
-        route = simplify_route(route, places)
-        with self._lock:
-            navigation_map_ready = self._navigation_map is not None
-        if not navigation_map_ready:
-            response.status = STATUS_GRAPH_NOT_READY
-            response.error_message = "waiting for the saved navigation map"
-            return response
-        projected_target = self._project_navigation_goal(
-            target_place.position,
-            start_position,
-            match.entity.position if entity_type == "object" else None,
-            target_standoff,
-        )
-        if projected_target is None:
-            response.status = STATUS_UNREACHABLE
-            response.error_message = (
-                "no robot-clear saved-map cell connects the robot to the "
-                "Hydra destination"
+        route = []
+        if entity_type == "object":
+            selected_standoff = math.hypot(
+                projected_target[0] - match.entity.position[0],
+                projected_target[1] - match.entity.position[1],
             )
-            return response
-        projection_distance = math.hypot(
-            projected_target[0] - target_place.position[0],
-            projected_target[1] - target_place.position[1],
-        )
-        if projection_distance > 0.05:
             self.get_logger().info(
-                f"Projected Hydra place {target_place.node_id} by "
-                f"{projection_distance:.2f} m onto reachable saved-map space"
+                f"Nav2 selected {match.entity.node_id} with a "
+                f"{nav2_path_cost:.2f} m planned path and "
+                f"{selected_standoff:.2f} m manipulation standoff"
+            )
+        else:
+            self.get_logger().info(
+                f"Nav2 selected {match.entity.node_id} with a "
+                f"{nav2_path_cost:.2f} m planned path"
             )
 
         response.success = True
@@ -1283,31 +1476,23 @@ class SceneGraphAdapter(Node):
             response.destination_pose.pose.position.y = target_y
             response.destination_pose.pose.position.z = target_z
             response.destination_pose.pose.orientation.w = 1.0
-        waypoint_place_ids = route[1:] or route
-        if not bool(
-            self.get_parameter("emit_intermediate_waypoints").value
-        ):
-            waypoint_place_ids = [route[-1]]
-        for index, place_id in enumerate(waypoint_place_ids):
-            place = places[place_id]
-            waypoint = PoseStamped()
-            waypoint.header.frame_id = self._map_frame
-            waypoint.header.stamp = self.get_clock().now().to_msg()
-            if index == len(waypoint_place_ids) - 1:
-                waypoint.pose.position.x = projected_target[0]
-                waypoint.pose.position.y = projected_target[1]
-            else:
-                waypoint.pose.position.x = place.position[0]
-                waypoint.pose.position.y = place.position[1]
-            if index == len(waypoint_place_ids) - 1 and entity_type == "object":
-                dx = match.entity.position[0] - waypoint.pose.position.x
-                dy = match.entity.position[1] - waypoint.pose.position.y
-                yaw = math.atan2(dy, dx)
-            else:
-                yaw = 0.0
-            waypoint.pose.orientation.z = math.sin(yaw / 2.0)
-            waypoint.pose.orientation.w = math.cos(yaw / 2.0)
-            response.waypoints.append(waypoint)
+        # Nav2 owns the route. Supplying Hydra place nodes as intermediate
+        # waypoints would reintroduce sparse-graph detours and can force the
+        # robot through a worse route than the planner just selected.
+        waypoint = PoseStamped()
+        waypoint.header.frame_id = self._map_frame
+        waypoint.header.stamp = self.get_clock().now().to_msg()
+        waypoint.pose.position.x = projected_target[0]
+        waypoint.pose.position.y = projected_target[1]
+        if entity_type == "object":
+            dx = match.entity.position[0] - waypoint.pose.position.x
+            dy = match.entity.position[1] - waypoint.pose.position.y
+            yaw = math.atan2(dy, dx)
+        else:
+            yaw = 0.0
+        waypoint.pose.orientation.z = math.sin(yaw / 2.0)
+        waypoint.pose.orientation.w = math.cos(yaw / 2.0)
+        response.waypoints.append(waypoint)
         return response
 
     def _save_callback(self, _request, response):
@@ -1701,9 +1886,12 @@ def re_symbol(value: str) -> bool:
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = SceneGraphAdapter()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

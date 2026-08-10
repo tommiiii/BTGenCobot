@@ -11,6 +11,8 @@ string entity_type
 string label
 string preferred_id
 bool allow_stale
+bool use_reference_position
+geometry_msgs/Point reference_position
 ---
 bool success
 uint8 status

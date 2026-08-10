@@ -10,6 +10,7 @@ find_package(ament_cmake REQUIRED)
 
 # Install directories
 install(DIRECTORY
+  behavior_trees
   config
   launch
   DESTINATION share/${PROJECT_NAME}
@@ -19,6 +20,7 @@ install(PROGRAMS
   scripts/environment_publisher.py
   scripts/frontend_relay.py
   scripts/mapping_session_publisher.py
+  scripts/nav2_lifecycle_guard.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

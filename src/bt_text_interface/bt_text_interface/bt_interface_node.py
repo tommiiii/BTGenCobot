@@ -31,6 +31,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from bt_text_interface.semantic_compilation import (
+    ensure_follow_path_goal_checker,
     reacquisition_requested,
     supply_live_pose_to_following_pick,
 )
@@ -76,7 +77,10 @@ class BTInterfaceNode(Node):
         )
         self.declare_parameter('semantic_queue_timeout', 1800.0)
         self.declare_parameter('semantic_queue_poll_period', 2.0)
-        self.declare_parameter('semantic_resolver_call_timeout', 5.0)
+        # Resolving an ambiguous label may ask Nav2 to plan to several Hydra
+        # instances before choosing one. Keep this above the adapter's bounded
+        # per-candidate planning window.
+        self.declare_parameter('semantic_resolver_call_timeout', 20.0)
         self.declare_parameter(
             'semantic_discovery_service',
             '/mapping/discover_semantic_object',
@@ -430,6 +434,8 @@ class BTInterfaceNode(Node):
                 else:
                     goal_handle.abort()
                 return result
+
+            bt_xml = ensure_follow_path_goal_checker(bt_xml)
 
             self.publish_feedback(goal_handle, 'validating', 0.3, 'Validating generated BT...')
             is_valid, val_error = self.validate_bt_xml(bt_xml)
@@ -837,6 +843,7 @@ class BTInterfaceNode(Node):
                 'name': f'Follow semantic route {route_index}.{waypoint_index}',
                 'path': path_key,
                 'controller_id': 'FollowPath',
+                'goal_checker_id': 'general_goal_checker',
             }
             if response.entity_type == 'object':
                 # Manipulation depends on the base actually facing the object;
@@ -857,6 +864,7 @@ class BTInterfaceNode(Node):
         semantic_node: ET.Element,
         goal_handle,
         queue_deadline: float,
+        reference_position=None,
     ):
         entity_ref = semantic_node.get('entity_ref', '').strip()
         if not entity_ref:
@@ -891,6 +899,11 @@ class BTInterfaceNode(Node):
                 request.allow_stale = (
                     semantic_node.get('allow_stale', 'false').lower() == 'true'
                 )
+                request.use_reference_position = reference_position is not None
+                if reference_position is not None:
+                    request.reference_position.x = float(reference_position[0])
+                    request.reference_position.y = float(reference_position[1])
+                    request.reference_position.z = float(reference_position[2])
                 try:
                     response = await self._wait_for_rclpy_future(
                         self._semantic_resolver_client.call_async(request),
@@ -1049,6 +1062,7 @@ class BTInterfaceNode(Node):
             return xml_string, None
 
         queue_deadline = time.monotonic() + self.semantic_queue_timeout
+        reference_position = None
         for route_index, (parent, semantic_node) in enumerate(
             semantic_nodes,
             start=1,
@@ -1057,9 +1071,17 @@ class BTInterfaceNode(Node):
                 semantic_node,
                 goal_handle,
                 queue_deadline,
+                reference_position,
             )
             if response is None:
                 return None, error
+            if response.waypoints:
+                endpoint = response.waypoints[-1].pose.position
+                reference_position = (
+                    float(endpoint.x),
+                    float(endpoint.y),
+                    float(endpoint.z),
+                )
             live_object_pose = semantic_node.attrib.pop(
                 '_live_object_pose',
                 '',

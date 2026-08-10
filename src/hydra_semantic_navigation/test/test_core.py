@@ -198,6 +198,32 @@ def test_duplicate_labels_choose_lowest_reachable_route_cost():
     assert route == ["start", "near"]
 
 
+def test_near_reachable_instance_beats_sparse_graph_detour_metric():
+    places = {
+        "start": Place(
+            "start", (0.0, 0.0, 0.0), 0.5, {"near": 10.0, "far": 2.0}
+        ),
+        "near": Place("near", (2.0, 0.0, 0.0), 0.5, {"start": 10.0}),
+        "far": Place("far", (5.0, 0.0, 0.0), 0.5, {"start": 2.0}),
+    }
+    matches = rank_entities(
+        "table",
+        "object",
+        [
+            SemanticEntity("far", "object", "table", (5.0, 0.0, 0.0)),
+            SemanticEntity("near", "object", "table", (2.0, 0.0, 0.0)),
+        ],
+    )
+
+    match, route, error = choose_best_routable_match(
+        matches, places, (0.0, 0.0, 0.0), 0.3
+    )
+
+    assert error is None
+    assert match.entity.node_id == "near"
+    assert route == ["start", "near"]
+
+
 def test_fuzzy_label_matching_has_a_threshold():
     entities = [
         SemanticEntity("R1", "room", "bedroom", (0.0, 0.0, 0.0)),

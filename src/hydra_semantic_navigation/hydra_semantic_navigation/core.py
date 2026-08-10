@@ -623,7 +623,9 @@ def choose_best_routable_match(
 
     Semantic score remains the primary key so a nearby fuzzy match cannot beat
     an exact label. Equal semantic matches prefer a reachable Hydra route, then
-    route cost, Euclidean distance and finally stable node ID. If every match
+    physical distance, route cost and finally stable node ID. Hydra's sparse
+    place graph is an excellent reachability check but can contain large
+    topological detours that do not reflect Nav2's free-space path length. If every match
     is unreachable, return the nearest deterministic choice with an empty
     route so the caller can report reachability rather than ambiguity.
     """
@@ -659,8 +661,8 @@ def choose_best_routable_match(
         key=lambda value: (
             -value[0].score,
             not bool(value[1]),
-            value[2],
             distance_2d(value[0].entity.position, start_position),
+            value[2],
             value[0].entity.node_id,
         )
     )

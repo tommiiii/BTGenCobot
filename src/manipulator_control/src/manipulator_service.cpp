@@ -7,6 +7,7 @@
 #include <std_srvs/srv/empty.hpp>
 #include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <algorithm>
+#include <cmath>
 
 using namespace std::placeholders;
 using namespace std::chrono_literals;
@@ -17,8 +18,19 @@ public:
   ManipulatorService(const rclcpp::NodeOptions & options = rclcpp::NodeOptions())
   : Node("manipulator_service", options)
   {
-    this->declare_parameter("pick_transport_tool_height", 0.90);
+    // Keep the complete gripper/object assembly above ordinary work surfaces
+    // while the mobile base approaches them.  The Hydra table in the test
+    // world is ~0.85 m high and arm_tool_link sits ~0.16 m above the grasp
+    // frame, so 0.90 m lets the fingers hit the table edge.
+    this->declare_parameter("pick_transport_tool_height", 1.15);
     this->declare_parameter("pick_lift_velocity_scale", 0.20);
+    this->declare_parameter("pick_approach_velocity_scale", 0.50);
+    this->declare_parameter("pick_torso_speed", 0.05);
+    this->declare_parameter("pick_grasp_clearance", 0.01);
+    this->declare_parameter("pick_pregrasp_clearance", 0.20);
+    this->declare_parameter("pick_min_pregrasp_tool_height", 0.45);
+    this->declare_parameter("place_preapproach_clearance", 0.02);
+    this->declare_parameter("place_release_clearance", 0.05);
 
     // Create a reentrant callback group so service callbacks and action clients don't deadlock
     callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
@@ -33,6 +45,8 @@ public:
     // Setup Gripper Action Client
     gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
       this, "/gripper_controller/follow_joint_trajectory", callback_group_);
+    torso_action_client_ = rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
+      this, "/torso_controller/follow_joint_trajectory", callback_group_);
       
     RCLCPP_INFO(this->get_logger(), "Manipulator service (MoveIt 2) ready.");
   }
@@ -44,6 +58,11 @@ public:
     if (!move_group_arm_->setEndEffectorLink("arm_tool_link")) {
       throw std::runtime_error("arm_tool_link is not available in the arm_torso MoveIt group");
     }
+    move_group_arm_only_ =
+      std::make_shared<moveit::planning_interface::MoveGroupInterface>(shared_this, "arm");
+    if (!move_group_arm_only_->setEndEffectorLink("arm_tool_link")) {
+      throw std::runtime_error("arm_tool_link is not available in the arm MoveIt group");
+    }
     RCLCPP_INFO(
       this->get_logger(), "MoveIt end-effector link: %s",
       move_group_arm_->getEndEffectorLink().c_str());
@@ -52,12 +71,17 @@ public:
     move_group_arm_->setMaxAccelerationScalingFactor(1.0);
     // Increase planning time slightly
     move_group_arm_->setPlanningTime(5.0);
+    move_group_arm_only_->setMaxVelocityScalingFactor(1.0);
+    move_group_arm_only_->setMaxAccelerationScalingFactor(1.0);
+    move_group_arm_only_->setPlanningTime(5.0);
   }
 
 private:
   rclcpp::Service<btgencobot_interfaces::srv::ManipulatorAction>::SharedPtr service_;
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_arm_;
+  std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_arm_only_;
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr gripper_action_client_;
+  rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr torso_action_client_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   
   // Gripper settings
@@ -121,6 +145,137 @@ private:
     move_group_arm_->setStartState(*current_state);
   }
 
+  bool execute_torso_translation(double displacement, const char * description)
+  {
+    if (std::abs(displacement) < 1e-4) {
+      return true;
+    }
+    moveit::core::RobotStatePtr current_state = move_group_arm_->getCurrentState();
+    if (!current_state) {
+      RCLCPP_ERROR(this->get_logger(), "Current state unavailable for vertical descent");
+      return false;
+    }
+    const moveit::core::JointModel * torso_joint =
+      current_state->getJointModel("torso_lift_joint");
+    if (!torso_joint) {
+      RCLCPP_ERROR(this->get_logger(), "torso_lift_joint is missing from the robot model");
+      return false;
+    }
+    const double * current_position = current_state->getJointPositions(torso_joint);
+    if (!current_position) {
+      return false;
+    }
+    double target_position = *current_position + displacement;
+    // Controller feedback and the requested inverse retreat can differ by a
+    // few floating-point ulps at the exact 0.0/0.35 m joint limits.  Snap only
+    // numerical-boundary values to the physical limits; real over-travel is
+    // still rejected by satisfiesPositionBounds() below.
+    constexpr double torso_min = 0.0;
+    constexpr double torso_max = 0.35;
+    constexpr double boundary_tolerance = 1e-4;
+    if (target_position < torso_min && target_position >= torso_min - boundary_tolerance) {
+      target_position = torso_min;
+    } else if (
+      target_position > torso_max && target_position <= torso_max + boundary_tolerance)
+    {
+      target_position = torso_max;
+    }
+    if (!torso_joint->satisfiesPositionBounds(&target_position)) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "%s displacement %.3f m exceeds available torso travel from %.3f m",
+        description, displacement, *current_position);
+      return false;
+    }
+
+    if (!torso_action_client_->wait_for_action_server(std::chrono::seconds(5))) {
+      RCLCPP_ERROR(this->get_logger(), "Torso action server not available");
+      return false;
+    }
+
+    control_msgs::action::FollowJointTrajectory::Goal goal;
+    goal.trajectory.joint_names = {"torso_lift_joint"};
+    trajectory_msgs::msg::JointTrajectoryPoint point;
+    point.positions = {target_position};
+    const double speed = std::clamp(
+      this->get_parameter("pick_torso_speed").as_double(), 0.01, 0.10);
+    const double trajectory_duration = std::max(1.0, std::abs(displacement) / speed);
+    point.time_from_start = rclcpp::Duration::from_seconds(trajectory_duration);
+    goal.trajectory.points.push_back(point);
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Executing %s (%.3f m) through the torso controller; arm remains stationary",
+      description, displacement);
+    auto goal_future = torso_action_client_->async_send_goal(goal);
+    if (goal_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+      RCLCPP_ERROR(this->get_logger(), "Timed out sending torso descent goal");
+      return false;
+    }
+    auto goal_handle = goal_future.get();
+    if (!goal_handle) {
+      RCLCPP_ERROR(this->get_logger(), "Torso descent goal was rejected");
+      return false;
+    }
+    auto result_future = torso_action_client_->async_get_result(goal_handle);
+    // The simulated ros2_control loop can run substantially slower than wall
+    // time while perception and Gazebo are busy. Let the controller own goal
+    // tolerance and use this only as a genuine missing-result safeguard.
+    const auto timeout = std::chrono::duration<double>(
+      trajectory_duration * 4.0 + 5.0);
+    if (result_future.wait_for(timeout) != std::future_status::ready) {
+      RCLCPP_ERROR(this->get_logger(), "Torso descent timed out");
+      torso_action_client_->async_cancel_goal(goal_handle);
+      return false;
+    }
+    return result_future.get().code == rclcpp_action::ResultCode::SUCCEEDED;
+  }
+
+  bool reserve_torso_descent(double distance)
+  {
+    moveit::core::RobotStatePtr current_state = move_group_arm_->getCurrentState();
+    if (!current_state) {
+      return false;
+    }
+    const moveit::core::JointModel * torso_joint =
+      current_state->getJointModel("torso_lift_joint");
+    const double * current_position = torso_joint ?
+      current_state->getJointPositions(torso_joint) : nullptr;
+    if (!current_position) {
+      return false;
+    }
+    constexpr double reserve_margin = 0.01;
+    const double required_position = distance + reserve_margin;
+    if (*current_position >= required_position) {
+      return true;
+    }
+    return execute_torso_translation(
+      required_position - *current_position, "pre-grasp torso reserve");
+  }
+
+  bool get_tool_to_grasp_reach(double & reach)
+  {
+    moveit::core::RobotStatePtr current_state = move_group_arm_->getCurrentState();
+    if (!current_state) {
+      return false;
+    }
+    const moveit::core::LinkModel * tool_link =
+      current_state->getLinkModel("arm_tool_link");
+    const moveit::core::LinkModel * grasp_link =
+      current_state->getLinkModel("gripper_grasping_frame");
+    if (!tool_link || !grasp_link) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Robot model is missing arm_tool_link or gripper_grasping_frame");
+      return false;
+    }
+    const Eigen::Isometry3d tool_to_grasp =
+      current_state->getGlobalLinkTransform(tool_link).inverse() *
+      current_state->getGlobalLinkTransform(grasp_link);
+    reach = tool_to_grasp.translation().norm();
+    return std::isfinite(reach) && reach > 0.0;
+  }
+
   bool execute_pick(const geometry_msgs::msg::PoseStamped & target_pose)
   {
     if (!move_group_arm_) {
@@ -137,6 +292,7 @@ private:
     // leaving MoveIt's default robot frame here turns a short vertical descent
     // into a several-metre diagonal request.
     move_group_arm_->setPoseReferenceFrame(target_pose.header.frame_id);
+    move_group_arm_only_->setPoseReferenceFrame(target_pose.header.frame_id);
 
     // 1. Open gripper
     RCLCPP_INFO(this->get_logger(), "Opening gripper...");
@@ -145,15 +301,18 @@ private:
       return false;
     }
 
-    // Calculate poses
-    // Exact URDF transform from arm_tool_link to gripper_grasping_frame.
-    const double finger_length = 0.151;
+    // Calculate poses using the robot model's tool-to-grasp transform.
+    double finger_length = 0.0;
+    if (!get_tool_to_grasp_reach(finger_length)) {
+      return false;
+    }
     geometry_msgs::msg::PoseStamped grasp_pose = target_pose;
     // We command arm_tool_link, which is 'finger_length' above the grasping
     // frame. Keep the grasp center tied to the measured object center; an
     // absolute tool-height clamp shifts small floor objects out of the fingers.
     grasp_pose.pose.position.z =
-      target_pose.pose.position.z + 0.01 + finger_length;
+      target_pose.pose.position.z +
+      this->get_parameter("pick_grasp_clearance").as_double() + finger_length;
     // Orientation for arm_tool_link to make gripper point DOWN:
     // X_arm=UP, Z_arm=FORWARD => q=[0, 0.707, 0, 0.707]
     grasp_pose.pose.orientation.x = 0.0;
@@ -165,7 +324,12 @@ private:
     // The downward-facing IK is unreliable below about 0.45 m at the ball's
     // manipulation standoff. Only the staging pose needs this clearance; the
     // final grasp must remain tied to the measured object height.
-    above_pose.pose.position.z = std::max(grasp_pose.pose.position.z + 0.20, 0.45);
+    above_pose.pose.position.z = std::max(
+      grasp_pose.pose.position.z +
+      this->get_parameter("pick_pregrasp_clearance").as_double(),
+      this->get_parameter("pick_min_pregrasp_tool_height").as_double());
+    const double descent_distance =
+      above_pose.pose.position.z - grasp_pose.pose.position.z;
 
     RCLCPP_INFO(
       this->get_logger(),
@@ -177,20 +341,29 @@ private:
       grasp_pose.pose.position.x, grasp_pose.pose.position.y,
       grasp_pose.pose.position.z, above_pose.pose.position.z);
 
-    // 1. Move to above pose (free space)
+    // Reserve the vertical degree of freedom before solving pre-grasp. The
+    // arm_torso IK is redundant and may otherwise spend arbitrary torso travel
+    // reaching the same pose, leaving too little range for the straight descent.
+    if (!reserve_torso_descent(descent_distance)) {
+      RCLCPP_ERROR(this->get_logger(), "Unable to reserve torso travel for grasp descent");
+      return false;
+    }
+
+    // 1. Move the arm to the above pose while preserving the torso reserve.
     RCLCPP_INFO(this->get_logger(), "Planning path to above pose...");
-    sanitize_start_state();
-    move_group_arm_->setPoseTarget(above_pose);
+    move_group_arm_only_->setStartStateToCurrentState();
+    move_group_arm_only_->setPoseTarget(above_pose);
     
     moveit::planning_interface::MoveGroupInterface::Plan above_plan;
-    bool success = (move_group_arm_->plan(above_plan) == moveit::core::MoveItErrorCode::SUCCESS);
+    bool success = (
+      move_group_arm_only_->plan(above_plan) == moveit::core::MoveItErrorCode::SUCCESS);
     if (!success) {
       RCLCPP_ERROR(this->get_logger(), "Failed to plan to above pose");
       return false;
     }
     
     RCLCPP_INFO(this->get_logger(), "Moving to above pose...");
-    if (move_group_arm_->execute(above_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+    if (move_group_arm_only_->execute(above_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
       RCLCPP_ERROR(this->get_logger(), "Failed to move to above pose");
       return false;
     }
@@ -206,6 +379,11 @@ private:
     // 2. Move down to grasp pose (Cartesian preferred, fallback to OMPL)
     RCLCPP_INFO(this->get_logger(), "Moving down to grasp pose...");
     sanitize_start_state();
+    const double approach_scale = std::clamp(
+      this->get_parameter("pick_approach_velocity_scale").as_double(),
+      0.05, 1.0);
+    move_group_arm_->setMaxVelocityScalingFactor(approach_scale);
+    move_group_arm_->setMaxAccelerationScalingFactor(approach_scale);
     std::vector<geometry_msgs::msg::Pose> down_waypoints;
     down_waypoints.push_back(grasp_pose.pose);
     moveit_msgs::msg::RobotTrajectory down_trajectory;
@@ -214,7 +392,11 @@ private:
       this->get_logger(), "Cartesian descent fraction: %.3f", fraction);
     
     if (fraction >= 0.9) {
-      success = (move_group_arm_->execute(down_trajectory) == moveit::core::MoveItErrorCode::SUCCESS);
+      // The arm_torso group is redundant for a pure Z move. Cartesian IK can
+      // switch arm branches even for a geometrically valid path, which is hard
+      // for the simulated arm controller to track. The torso joint translates
+      // the unchanged arm along the same vertical corridor exactly.
+      success = execute_torso_translation(-descent_distance, "vertical grasp descent");
     } else {
       RCLCPP_WARN(this->get_logger(), "Cartesian down failed (fraction: %f), using free space...", fraction);
       sanitize_start_state();
@@ -226,6 +408,8 @@ private:
           success = false;
       }
     }
+    move_group_arm_->setMaxVelocityScalingFactor(1.0);
+    move_group_arm_->setMaxAccelerationScalingFactor(1.0);
     
     if (!success) {
       RCLCPP_ERROR(this->get_logger(), "Failed to reach grasp pose");
@@ -291,62 +475,76 @@ private:
       return false;
     }
     move_group_arm_->setPoseReferenceFrame(target_pose.header.frame_id);
+    move_group_arm_only_->setPoseReferenceFrame(target_pose.header.frame_id);
 
-    const double finger_length = 0.151;
+    double finger_length = 0.0;
+    if (!get_tool_to_grasp_reach(finger_length)) {
+      return false;
+    }
     geometry_msgs::msg::PoseStamped place_pose = target_pose;
-    place_pose.pose.position.z += finger_length;
+    // Hydra supplies the top of the support geometry.  Keep the grasp center
+    // slightly above that surface so the released object settles onto it
+    // instead of being commanded through it.
+    place_pose.pose.position.z +=
+      finger_length + this->get_parameter("place_release_clearance").as_double();
     place_pose.pose.orientation.x = 0.0;
     place_pose.pose.orientation.y = 0.70710678;
     place_pose.pose.orientation.z = 0.0;
     place_pose.pose.orientation.w = 0.70710678;
 
-    // 1. Move directly to place pose using free space planning
-    RCLCPP_INFO(this->get_logger(), "Planning path to place pose...");
-    sanitize_start_state();
-    move_group_arm_->setPoseTarget(place_pose);
-    
-    moveit::planning_interface::MoveGroupInterface::Plan my_plan;
-    bool success = (move_group_arm_->plan(my_plan) == moveit::core::MoveItErrorCode::SUCCESS);
-    if (!success) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to plan to place pose");
-      return false;
-    }
-    
-    RCLCPP_INFO(this->get_logger(), "Moving to place pose...");
-    if (move_group_arm_->execute(my_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to move to place pose");
+    // Navigation has already positioned the carried object over the selected
+    // support.  Keep that proven arm configuration and its XY position: asking
+    // IK to move arm_tool_link to the Hydra support centroid can be unreachable
+    // (and can sweep the payload into an edge) even though the payload is
+    // already visibly over the support.  Placement only needs a vertical move.
+    geometry_msgs::msg::PoseStamped above_pose = move_group_arm_->getCurrentPose();
+    const double descent_distance =
+      above_pose.pose.position.z - place_pose.pose.position.z;
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Place geometry in %s: support [%.3f, %.3f, %.3f], "
+      "release tool z %.3f, current tool [%.3f, %.3f, %.3f]",
+      target_pose.header.frame_id.c_str(),
+      target_pose.pose.position.x, target_pose.pose.position.y,
+      target_pose.pose.position.z, place_pose.pose.position.z,
+      above_pose.pose.position.x, above_pose.pose.position.y,
+      above_pose.pose.position.z);
+
+    const double minimum_descent = std::clamp(
+      this->get_parameter("place_preapproach_clearance").as_double(), 0.02, 0.20);
+    if (descent_distance < minimum_descent) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Current carry pose has only %.3f m vertical release clearance; %.3f m required",
+        descent_distance, minimum_descent);
       return false;
     }
 
-    // 2. Open gripper to place
+    // Descend through the torso joint so the arm configuration and held object
+    // cannot swing laterally into the support.  Do not pass getCurrentPose()
+    // back through Cartesian IK here: MoveIt reports that pose in the robot's
+    // local planning frame while the semantic target is in map, and mixing the
+    // two turns a short Z motion into a spurious diagonal request.
+    RCLCPP_INFO(this->get_logger(), "Descending vertically to release pose...");
+    bool success = execute_torso_translation(
+      -descent_distance, "vertical place descent");
+    if (!success) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to descend to release pose");
+      return false;
+    }
+
+    // 3. Open gripper to place.
     RCLCPP_INFO(this->get_logger(), "Opening gripper...");
     if (!move_gripper(GRIPPER_OPEN, false)) {
       RCLCPP_ERROR(this->get_logger(), "Failed to open gripper");
       return false;
     }
 
-    // 3. Move up (Cartesian lift)
-    RCLCPP_INFO(this->get_logger(), "Lifting after place...");
-    sanitize_start_state();
-    geometry_msgs::msg::PoseStamped above_pose = place_pose;
-    above_pose.pose.position.z += 0.15;
-    
-    std::vector<geometry_msgs::msg::Pose> up_waypoints;
-    up_waypoints.push_back(above_pose.pose);
-    
-    moveit_msgs::msg::RobotTrajectory up_trajectory;
-    double fraction = move_group_arm_->computeCartesianPath(up_waypoints, 0.01, up_trajectory);
-    
-    if (fraction >= 0.9) {
-      success = (
-        move_group_arm_->execute(up_trajectory) ==
-        moveit::core::MoveItErrorCode::SUCCESS);
-    } else {
-      sanitize_start_state();
-      move_group_arm_->setPoseTarget(above_pose);
-      success = (
-        move_group_arm_->move() == moveit::core::MoveItErrorCode::SUCCESS);
-    }
+    // 4. Retreat through the same vertical corridor before any lateral move.
+    RCLCPP_INFO(this->get_logger(), "Retreating vertically after release...");
+    success = execute_torso_translation(
+      descent_distance, "vertical place retreat");
     if (!success) {
       RCLCPP_ERROR(this->get_logger(), "Failed to retreat after place");
       return false;

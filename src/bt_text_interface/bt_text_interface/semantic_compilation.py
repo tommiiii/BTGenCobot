@@ -5,6 +5,19 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 
 
+def ensure_follow_path_goal_checker(
+    xml_string: str,
+    default_goal_checker: str = 'general_goal_checker',
+) -> str:
+    """Give every FollowPath an explicit checker without overriding intent."""
+    root = ET.fromstring(xml_string)
+    for element in root.iter():
+        node_id = element.get('ID') if element.tag == 'Action' else element.tag
+        if node_id == 'FollowPath' and not element.get('goal_checker_id', '').strip():
+            element.set('goal_checker_id', default_goal_checker)
+    return ET.tostring(root, encoding='unicode')
+
+
 def reacquisition_requested(semantic_node: ET.Element) -> bool:
     """Return whether manipulation should reacquire its target after navigation.
 

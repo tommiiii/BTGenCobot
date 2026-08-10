@@ -29,6 +29,7 @@ from nav2_common.launch import RewrittenYaml
 def generate_launch_description():
     # Get the launch directory
     bringup_dir = get_package_share_directory('nav2_bringup')
+    project_bringup_dir = get_package_share_directory('bt_bringup')
 
     namespace = LaunchConfiguration('namespace')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -61,7 +62,19 @@ def generate_launch_description():
     remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
 
     # Create our own temporary YAML files that include substitutions
-    param_substitutions = {'autostart': autostart}
+    param_substitutions = {
+        'autostart': autostart,
+        'default_nav_to_pose_bt_xml': os.path.join(
+            project_bringup_dir,
+            'behavior_trees',
+            'navigate_to_pose_with_general_goal_checker.xml',
+        ),
+        'default_nav_through_poses_bt_xml': os.path.join(
+            project_bringup_dir,
+            'behavior_trees',
+            'navigate_through_poses_with_general_goal_checker.xml',
+        ),
+    }
 
     configured_params = ParameterFile(
         RewrittenYaml(
