@@ -97,6 +97,81 @@ class SemanticEntity:
         )
 
 
+def build_semantic_scene_snapshot(
+    graph_version: int,
+    ready: bool,
+    rooms: Iterable[SemanticEntity],
+    objects: Iterable[SemanticEntity],
+    object_room_ids: Mapping[str, str],
+    place_count: int = 0,
+) -> dict:
+    """Build the compact, browser-facing semantic view of a Hydra DSG.
+
+    The complete Spark-DSG binary remains authoritative and is still published
+    on Hydra's native topic.  This projection contains only operator-useful
+    room/object nodes and their hierarchy, so a web client does not need the
+    Spark-DSG protobuf implementation or the much larger mesh/place layers.
+    """
+    room_list = sorted(rooms, key=lambda entity: entity.node_id)
+    object_list = sorted(objects, key=lambda entity: entity.node_id)
+
+    def node_payload(entity: SemanticEntity) -> dict:
+        payload = {
+            "id": entity.node_id,
+            "type": entity.entity_type,
+            "label": entity.label,
+            "position": {
+                "x": float(entity.position[0]),
+                "y": float(entity.position[1]),
+                "z": float(entity.position[2]),
+            },
+            "source": entity.source,
+        }
+        parent_id = object_room_ids.get(entity.node_id)
+        if parent_id:
+            payload["parent_id"] = parent_id
+        if entity.bounds_min is not None and entity.bounds_max is not None:
+            payload["bounds"] = {
+                "min": list(entity.bounds_min),
+                "max": list(entity.bounds_max),
+            }
+        if entity.evidence:
+            payload["evidence"] = list(entity.evidence)
+        return payload
+
+    room_ids = {entity.node_id for entity in room_list}
+    object_ids = {entity.node_id for entity in object_list}
+    edges = [
+        {
+            "id": f"{room_id}->{object_id}",
+            "source": room_id,
+            "target": object_id,
+            "relation": "contains",
+        }
+        for object_id, room_id in sorted(object_room_ids.items())
+        if room_id in room_ids and object_id in object_ids
+    ]
+
+    return {
+        "graph_version": int(graph_version),
+        "ready": bool(ready),
+        "counts": {
+            "rooms": len(room_list),
+            "objects": len(object_list),
+            "places": int(place_count),
+        },
+        "rooms": sorted(
+            {entity.label for entity in room_list if entity.label != "room"}
+        ),
+        "objects": sorted({entity.label for entity in object_list}),
+        "nodes": [
+            *(node_payload(entity) for entity in room_list),
+            *(node_payload(entity) for entity in object_list),
+        ],
+        "edges": edges,
+    }
+
+
 @dataclass(frozen=True)
 class ObjectNodeCandidate:
     """Minimal object-node data needed for deterministic DSG de-duplication."""

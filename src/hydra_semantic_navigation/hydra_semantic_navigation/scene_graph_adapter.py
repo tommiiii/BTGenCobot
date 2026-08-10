@@ -38,6 +38,7 @@ from .core import (
     ObjectNodeCandidate,
     Place,
     SemanticEntity,
+    build_semantic_scene_snapshot,
     conflicting_object_node_ids,
     infer_room_label,
     normalize_label,
@@ -290,6 +291,9 @@ class SceneGraphAdapter(Node):
         )
         self._known_entities_pub = self.create_publisher(
             String, "/hydra/known_entities", latched
+        )
+        self._scene_graph_snapshot_pub = self.create_publisher(
+            String, "/hydra/scene_graph_snapshot", latched
         )
         self._dsg_pub = self.create_publisher(
             DsgUpdate,
@@ -744,6 +748,27 @@ class SceneGraphAdapter(Node):
                 )
             )
         return evidence
+
+    def _object_room_memberships(self) -> dict[str, str]:
+        """Return object -> room hierarchy links present in the canonical DSG."""
+        memberships: dict[str, str] = {}
+        objects = self._layer(dsg.DsgLayers.OBJECTS)
+        if objects is None or self._graph is None:
+            return memberships
+
+        for object_node in objects.nodes:
+            if not object_node.has_parent():
+                continue
+            try:
+                place_node = self._graph.get_node(object_node.get_parent())
+                if not place_node.has_parent():
+                    continue
+                memberships[_node_id(object_node.id)] = _node_id(
+                    place_node.get_parent()
+                )
+            except Exception:
+                continue
+        return memberships
 
     def _room_entities(
         self, object_entities: list[SemanticEntity]
@@ -1840,16 +1865,21 @@ class SceneGraphAdapter(Node):
                 if duration > 0:
                     update_rate = (len(self._update_times) - 1) / duration
             ready = self._mapping_complete and places > 0
-            entities = self._room_entities(self._object_entities())
+            object_entities = self._object_entities()
+            room_entities = self._room_entities(object_entities)
+            snapshot = build_semantic_scene_snapshot(
+                graph_version=self._graph_version,
+                ready=ready,
+                rooms=room_entities,
+                objects=object_entities,
+                object_room_ids=self._object_room_memberships(),
+                place_count=places,
+            )
             known = {
-                "graph_version": self._graph_version,
-                "ready": ready,
-                "rooms": sorted(
-                    {entity.label for entity in entities if entity.label != "room"}
-                ),
-                "objects": sorted(
-                    {entity.label for entity in self._object_entities()}
-                ),
+                "graph_version": snapshot["graph_version"],
+                "ready": snapshot["ready"],
+                "rooms": snapshot["rooms"],
+                "objects": snapshot["objects"],
             }
 
         status = SceneGraphStatus()
@@ -1877,6 +1907,9 @@ class SceneGraphAdapter(Node):
         known_msg = String()
         known_msg.data = json.dumps(known, sort_keys=True)
         self._known_entities_pub.publish(known_msg)
+        snapshot_msg = String()
+        snapshot_msg.data = json.dumps(snapshot, sort_keys=True)
+        self._scene_graph_snapshot_pub.publish(snapshot_msg)
 
 
 def re_symbol(value: str) -> bool:
