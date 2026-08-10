@@ -3,6 +3,7 @@ from hydra_semantic_navigation.core import (
     Place,
     SemanticEntity,
     astar_route,
+    build_semantic_scene_snapshot,
     choose_best_routable_match,
     conflicting_object_node_ids,
     choose_unambiguous_match,
@@ -19,6 +20,40 @@ from hydra_semantic_navigation.core import (
     split_room_qualified_label,
     support_surface_height,
 )
+
+
+def test_semantic_scene_snapshot_preserves_room_object_hierarchy():
+    snapshot = build_semantic_scene_snapshot(
+        graph_version=7,
+        ready=True,
+        rooms=[
+            SemanticEntity(
+                "R1", "room", "kitchen", (1.0, 2.0, 0.0),
+                evidence=("sink", "table"),
+            )
+        ],
+        objects=[
+            SemanticEntity(
+                "O2", "object", "table", (1.5, 2.5, 0.7),
+                bounds_min=(1.0, 2.0, 0.0),
+                bounds_max=(2.0, 3.0, 0.8),
+            )
+        ],
+        object_room_ids={"O2": "R1"},
+        place_count=42,
+    )
+
+    assert snapshot["graph_version"] == 7
+    assert snapshot["counts"] == {"rooms": 1, "objects": 1, "places": 42}
+    assert snapshot["nodes"][1]["parent_id"] == "R1"
+    assert snapshot["edges"] == [
+        {
+            "id": "R1->O2",
+            "source": "R1",
+            "target": "O2",
+            "relation": "contains",
+        }
+    ]
 
 
 def test_grounded_support_keeps_graph_top():

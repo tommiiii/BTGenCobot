@@ -32,6 +32,21 @@ docker compose up -d btgencobot hydra
 cd inference_server && uv run serve
 ```
 
+### Web supervision frontend
+
+The companion frontend in `../tesi.triennale.CobotV2/frontend` is integrated
+with the normal `house_pick_and_place` bringup. Start it on the host with
+`npm ci && npm run dev`, open the displayed local URL, and connect the dashboard
+to the Foxglove bridge. Commands use the host inference API on port 8080, while
+the camera, metric map, Behavior Tree state, execution log, and Hydra semantics
+arrive through Foxglove on port 8765.
+
+The Hydra adapter publishes `/hydra/scene_graph_snapshot`, a compact transient
+snapshot containing room/object nodes, membership edges, and positions in the
+ROS `map` frame. The dashboard overlays those nodes directly on `/map`; raw DSG,
+mesh, and visualizer topics remain filtered from Foxglove to avoid burdening the
+operator connection.
+
 ### Automated mapping and scene-graph construction
 
 Run this in the `btgencobot` container:

@@ -313,7 +313,7 @@ def generate_launch_description():
             'certfile': '',
             'keyfile': '',
             'topic_whitelist': [
-                r'^(?!/hydra/|/hydra_visualizer/(mesh|static_objects)$).*'
+                r'^(?!/hydra/(?!scene_graph_snapshot$|scene_graph_status$|known_entities$)|/hydra_visualizer/(mesh|static_objects)$).*'
             ],
             'service_whitelist': [
                 r'^(?!/hydra/|/hydra_visualizer/).*'
