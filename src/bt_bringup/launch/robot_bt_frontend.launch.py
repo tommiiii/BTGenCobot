@@ -17,13 +17,29 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
     SetLaunchConfiguration,
     TimerAction,
 )
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+
+def _start_nav2_after_map(event, _context, nav2_launch):
+    if event.returncode == 0:
+        return [nav2_launch]
+    return [
+        LogInfo(
+            msg=(
+                "ERROR: map-to-robot TF did not become available; "
+                "Nav2 will not be started"
+            )
+        )
+    ]
 
 
 def resolve_environment_profile(context, profiles_file):
@@ -162,18 +178,35 @@ def generate_launch_description():
         ]
     )
 
-    nav2_launch = TimerAction(
-        period=14.0,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(pkg_bt_bringup, 'launch', 'nav2_bringup.launch.py')
-                ),
-                launch_arguments={
-                    'use_sim_time': use_sim_time
-                }.items()
-            )
-        ]
+    nav2_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_bt_bringup, 'launch', 'nav2_bringup.launch.py')
+        ),
+        launch_arguments={'use_sim_time': use_sim_time}.items(),
+    )
+    map_tf_ready = Node(
+        package='bt_bringup',
+        executable='wait_for_transform.py',
+        name='map_tf_readiness',
+        arguments=[
+            '--target-frame',
+            'map',
+            '--source-frame',
+            'base_footprint',
+            '--timeout',
+            '300',
+        ],
+        output='screen',
+    )
+    start_nav2_when_map_ready = RegisterEventHandler(
+        OnProcessExit(
+            target_action=map_tf_ready,
+            on_exit=lambda event, context: _start_nav2_after_map(
+                event,
+                context,
+                nav2_launch,
+            ),
+        )
     )
 
     # BT text interface subscribes to /btgen_nl_command (frontend commands).
@@ -325,7 +358,8 @@ def generate_launch_description():
     ld.add_action(frontend_relay)
     ld.add_action(gazebo_launch)
     ld.add_action(slam_launch)
-    ld.add_action(nav2_launch)
+    ld.add_action(start_nav2_when_map_ready)
+    ld.add_action(map_tf_ready)
     ld.add_action(bt_interface_node)
     ld.add_action(grounding_dino_service)
     ld.add_action(semantic_segmentation)

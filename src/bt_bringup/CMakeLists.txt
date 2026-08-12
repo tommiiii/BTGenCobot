@@ -20,7 +20,7 @@ install(PROGRAMS
   scripts/environment_publisher.py
   scripts/frontend_relay.py
   scripts/mapping_session_publisher.py
-  scripts/nav2_lifecycle_guard.py
+  scripts/wait_for_transform.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -14,15 +14,31 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
     SetLaunchConfiguration,
     TimerAction,
 )
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from nav2_common.launch import RewrittenYaml
 from launch_ros.actions import Node
+
+
+def _start_nav2_after_map(event, _context, nav2_launch):
+    if event.returncode == 0:
+        return [nav2_launch]
+    return [
+        LogInfo(
+            msg=(
+                "ERROR: map-to-robot TF did not become available; "
+                "Nav2 will not be started"
+            )
+        )
+    ]
 
 
 def resolve_environment_profile(context, profiles_file):
@@ -139,17 +155,37 @@ def generate_launch_description():
         ],
     )
 
-    nav2_launch = TimerAction(
-        period=14.0,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(pkg_bringup, 'launch', 'nav2_bringup.launch.py')
-                ),
-                launch_arguments={'use_sim_time': use_sim_time}.items(),
-            )
+    nav2_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_bringup, 'launch', 'nav2_bringup.launch.py')
+        ),
+        launch_arguments={'use_sim_time': use_sim_time}.items(),
+        condition=IfCondition(autonomous_exploration),
+    )
+    map_tf_ready = Node(
+        package='bt_bringup',
+        executable='wait_for_transform.py',
+        name='map_tf_readiness',
+        arguments=[
+            '--target-frame',
+            'map',
+            '--source-frame',
+            'base_footprint',
+            '--timeout',
+            '300',
         ],
         condition=IfCondition(autonomous_exploration),
+        output='screen',
+    )
+    start_nav2_when_map_ready = RegisterEventHandler(
+        OnProcessExit(
+            target_action=map_tf_ready,
+            on_exit=lambda event, context: _start_nav2_after_map(
+                event,
+                context,
+                nav2_launch,
+            ),
+        )
     )
 
     semantic_segmentation = TimerAction(
@@ -312,7 +348,8 @@ def generate_launch_description():
         fresh_mapping_session,
         gazebo_launch,
         slam_launch,
-        nav2_launch,
+        start_nav2_when_map_ready,
+        map_tf_ready,
         semantic_segmentation,
         navigation_posture,
         explorer,

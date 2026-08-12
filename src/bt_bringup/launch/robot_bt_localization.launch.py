@@ -12,15 +12,31 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
     SetLaunchConfiguration,
     TimerAction,
 )
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _start_nav2_after_localization(event, _context, nav2_launch):
+    if event.returncode == 0:
+        return [nav2_launch]
+    return [
+        LogInfo(
+            msg=(
+                "ERROR: localization did not establish map-to-robot TF; "
+                "Nav2 will not be started"
+            )
+        )
+    ]
 
 
 def resolve_environment_profile(context, profiles_file):
@@ -224,20 +240,37 @@ def generate_launch_description():
         ]
     )
 
-    # Configure Nav2 only after map_server and AMCL have established the
-    # map -> odom -> base_footprint transform chain.
-    nav2_launch = TimerAction(
-        period=24.0,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(pkg_bt_bringup, 'launch', 'nav2_bringup.launch.py')
-                ),
-                launch_arguments={
-                    'use_sim_time': use_sim_time
-                }.items()
-            )
-        ]
+    # Nav2 is a strict consumer of localization. Start it only after AMCL has
+    # established the complete map -> odom -> base_footprint TF chain.
+    nav2_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_bt_bringup, 'launch', 'nav2_bringup.launch.py')
+        ),
+        launch_arguments={'use_sim_time': use_sim_time}.items(),
+    )
+    localization_tf_ready = Node(
+        package='bt_bringup',
+        executable='wait_for_transform.py',
+        name='localization_tf_readiness',
+        arguments=[
+            '--target-frame',
+            'map',
+            '--source-frame',
+            'base_footprint',
+            '--timeout',
+            '300',
+        ],
+        output='screen',
+    )
+    start_nav2_when_localized = RegisterEventHandler(
+        OnProcessExit(
+            target_action=localization_tf_ready,
+            on_exit=lambda event, context: _start_nav2_after_localization(
+                event,
+                context,
+                nav2_launch,
+            ),
+        )
     )
 
     # Launch BT Text Interface Node (Action Server for BT generation)
@@ -415,7 +448,8 @@ def generate_launch_description():
     ld.add_action(amcl_lifecycle_node)
 
     # Add Nav2
-    ld.add_action(nav2_launch)
+    ld.add_action(start_nav2_when_localized)
+    ld.add_action(localization_tf_ready)
 
     # Add BT Interface Node (main action server)
     ld.add_action(bt_interface_node)
